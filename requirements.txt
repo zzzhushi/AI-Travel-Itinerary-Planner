@@ -1,0 +1,18 @@
+# Google ADK and Gemini
+google-adk>=0.1.0
+google-genai>=0.3.0
+
+# Excel export for research output
+openpyxl>=3.1.0
+
+# API
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.12
+pydantic>=2.0.0
+
+# Optional: for YAML trip file support
+pyyaml>=6.0.0
+
+# Tests
+pytest>=8.0.0
