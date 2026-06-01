@@ -1,41 +1,117 @@
-# Itinerary research (simple iteration)
+# Itinerary Planner
 
-Google Gemini (via [Google ADK](https://google.github.io/adk-docs/)) research agent: given JSON with **country**, **city**, and **activity** (fields may be incomplete), the agent searches for concrete places and writes:
+A multi-agent travel itinerary planner powered by Google Gemini. Create trips, research activities, rate options, and generate geo-aware day-by-day schedules. CLI-first with a web UI coming soon.
 
-- **`research_options.xlsx`** — addresses, locations, optional `user_rating` column for downstream rating
-- **`research_for_planning.json`** — same rows as JSON for another app to do hour-by-hour planning
+## How it works
 
-See `prompt.md` for the product intent.
+1. **Create a trip** — give it a destination (e.g. "Tokyo, Japan") and optionally how many days
+2. **Add activities** — vague ("ramen in Shinjuku") or specific ("Ichiran Ramen Shinjuku") 
+3. **Research** — the agent searches the web and returns 4–5 real options per activity, each with a Google Maps link
+4. **Rate** — score each option 1–5 based on how much you want to go
+5. **Schedule** — the planner clusters nearby options onto the same day and generates a day-by-day itinerary
 
-## Setup
+## Local setup
+
+**Requirements:** Python 3.12+, PostgreSQL (native install — no Docker).
+
+### 1. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Set `GOOGLE_API_KEY` (copy `.env.example` to `.env` or export in the shell).
-
-## Run
+### 2. Configure API keys
 
 ```bash
-python -m src.main --input examples/trip.json --out-dir out
+cp .env.example .env
+# Edit .env and fill in your keys
 ```
 
-Inline JSON:
+| Variable | Required | Purpose |
+|---|---|---|
+| `GOOGLE_API_KEY` | Yes | Gemini + Google Search (research agent) |
+| `GOOGLE_MAPS_API_KEY` | Optional | Geo clustering — groups nearby activities on the same day |
+| `DATABASE_URL` | Optional | PostgreSQL persistence; falls back to JSON output without it |
+
+### 3. Run the CLI
 
 ```bash
-python -m src.main --json "{\"activity\": \"salt bread, seoul\"}" --out-dir out
+# Interactive mode
+python run_cli.py
+
+# Validate config without making API calls
+python run_cli.py --dry-run
+
+# Non-interactive from a JSON file
+python run_cli.py --json examples/trip.json
 ```
 
-## Input JSON
-
-- **Required:** `activity` (string) **or** `activities` (list of strings).
-- **Optional:** `country`, `city` — omit when the activity text already implies location (e.g. `"salt bread, seoul"`). The research agent is instructed to infer geography from the wording when these are missing.
-
-## Tests
+### 4. Database setup (optional)
 
 ```bash
-pytest
+createdb itinerary
+alembic upgrade head
 ```
 
-Unit tests cover varied input quality (empty, invalid JSON, partial fields, lists) without calling the live API.
+## CLI walkthrough
+
+```
+Trip name: Japan September 2026
+Destination: Tokyo, Japan
+Number of days: 5
+Seed activities: ramen, teamLab, Senso-ji temple, Shibuya crossing
+
+Researching 4 activities...
+
+Options for: ramen
+  1. Ichiran Ramen (Shibuya)      [food]  ★ ?
+  2. Fuunji (Shinjuku)            [food]  ★ ?
+  ...
+
+Rate each option 1–5 (0 to skip)
+
+Generating schedule for 5 days...
+
+Day 1  [morning] TeamLab Borderless  [afternoon] Shibuya Crossing
+Day 2  [morning] Senso-ji Temple     [afternoon] Ichiran Ramen
+...
+
+Save to JSON? [Y/n]
+```
+
+## Project structure
+
+```
+src/
+  agents/
+    researcher.py     # Gemini + Google Search → options per activity
+    planner.py        # Geo clustering + time slot assignment + LLM refinement
+    orchestrator.py   # Coordinates research + planning, handles idempotency
+  db/
+    models.py         # SQLAlchemy ORM models
+    database.py       # Sync (CLI) and async (web) session factories
+  tools/
+    maps.py           # Google Maps geocoding + haversine distance
+  cli.py              # Interactive CLI
+
+run_cli.py            # Entry point
+alembic/              # DB migrations
+web/                  # FastAPI + HTMX web app (coming soon)
+```
+
+## Key design decisions
+
+- **Idempotent research** — activities are hashed by `(trip_id, query)`; re-running won't create duplicate options
+- **Geo clustering** — the planner uses haversine distance to group nearby activities on the same day, avoiding cross-city back-and-forth; falls back to round-robin without a Maps API key
+- **Two-phase scheduling** — deterministic Python clustering first, then an optional Gemini pass for human-readable ordering and notes
+- **Locked items** — mark a scheduled item as locked and the planner (and later the drag-drop UI) will never move it
+- **Day numbers vs dates** — the schedule uses `day_number` (1-based) until `start_date` is set on the trip
+
+## Coming soon
+
+- Web UI — trip dashboard, activity/options/schedule tabs, drag-drop calendar, star ratings
+- User settings page — enter API keys, stored in `.env`
+- Export to Google Doc
+- Budget tracking
+- Opening hours awareness
+- Notes per activity

@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Projects — Itinerary Research{% endblock %}
+{% block content %}
+<h2>Your Projects</h2>
+
+{% if projects %}
+<table>
+  <thead>
+    <tr><th>Name</th><th>City</th><th>Country</th><th>Created</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for p in projects %}
+    <tr>
+      <td><a href="/projects/{{ p.id }}">{{ p.name }}</a></td>
+      <td>{{ p.city or "—" }}</td>
+      <td>{{ p.country or "—" }}</td>
+      <td>{{ p.created_at.strftime("%Y-%m-%d") if p.created_at else "—" }}</td>
+      <td>
+        <div class="actions">
+          <a href="/projects/{{ p.id }}" role="button" class="btn-sm">Open</a>
+          <form method="post" action="/projects/{{ p.id }}/delete" style="margin:0"
+                onsubmit="return confirm('Delete project &quot;{{ p.name }}&quot; and all its data?')">
+            <button type="submit" class="btn-sm secondary outline">Delete</button>
+          </form>
+        </div>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>No projects yet. Create one below.</p>
+{% endif %}
+
+<hr>
+<h3>New Project</h3>
+<form method="post" action="/projects">
+  <div style="display:flex; gap:1rem; flex-wrap:wrap; align-items:flex-end">
+    <label style="flex:2; min-width:160px">
+      Name
+      <input type="text" name="name" placeholder="Seoul May 2026" required>
+    </label>
+    <label style="flex:1; min-width:120px">
+      Country
+      <input type="text" name="country" placeholder="South Korea">
+    </label>
+    <label style="flex:1; min-width:120px">
+      City
+      <input type="text" name="city" placeholder="Seoul">
+    </label>
+    <div>
+      <button type="submit">Create Project</button>
+    </div>
+  </div>
+</form>
+{% endblock %}

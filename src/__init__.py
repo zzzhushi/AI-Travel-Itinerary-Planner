@@ -1,1 +1,1 @@
-"""Itinerary research: Gemini agent + Excel output."""
+"""Itinerary planner: multi-agent research + scheduling."""

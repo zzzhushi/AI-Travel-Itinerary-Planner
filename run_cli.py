@@ -1,0 +1,28 @@
+"""Entry point for the CLI itinerary planner."""
+
+import asyncio
+import sys
+
+
+def main():
+    args = sys.argv[1:]
+    dry_run = "--dry-run" in args
+    json_path = None
+    if "--json" in args:
+        idx = args.index("--json")
+        if idx + 1 < len(args):
+            json_path = args[idx + 1]
+        else:
+            print("Error: --json requires a file path argument.")
+            sys.exit(1)
+
+    from src.cli import run_interactive, run_from_json
+
+    if json_path:
+        asyncio.run(run_from_json(json_path))
+    else:
+        asyncio.run(run_interactive(dry_run=dry_run))
+
+
+if __name__ == "__main__":
+    main()

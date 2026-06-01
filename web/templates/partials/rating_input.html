@@ -1,0 +1,9 @@
+<input type="text"
+       name="rating"
+       value="{{ opt.user_rating or '' }}"
+       placeholder="rate…"
+       hx-patch="/options/{{ opt.id }}/rating"
+       hx-trigger="change"
+       hx-target="closest td"
+       hx-swap="innerHTML"
+       style="width:80px">
