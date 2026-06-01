@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from src.agents.base import LlmAgent, _extract_json
+from src.agents.providers import LLMProvider
 from src.tools.maps import haversine_km
 
 # Time slot heuristics by category
@@ -227,14 +228,8 @@ def _build_refine_prompt(day_plans: list[DayPlan], destination: str) -> str:
 
 
 class PlannerAgent(LlmAgent):
-    def __init__(self) -> None:
-        super().__init__(
-            name="PlannerAgent",
-            instruction=PLANNER_INSTRUCTION,
-            tools=[],  # add google_search, maps tool here when ready
-            retry_attempts=3,
-            retry_exp_base=5,
-        )
+    def __init__(self, provider: LLMProvider) -> None:
+        super().__init__(provider)
 
     async def refine(
         self,
@@ -251,20 +246,3 @@ class PlannerAgent(LlmAgent):
         return raw if isinstance(raw, list) else [], ""
 
 
-# Lazy singleton — constructed on first call so env vars are loaded before init.
-_planner: PlannerAgent | None = None
-
-
-async def refine_schedule_with_llm(
-    day_plans: list[DayPlan],
-    destination: str,
-) -> tuple[list[dict], str]:
-    """Optional LLM pass to improve ordering and add notes within each day.
-
-    Returns (refined_days, error_message).
-    Each day: {"day": int, "items": [{"option_id", "name", "time_slot", "note"}]}
-    """
-    global _planner
-    if _planner is None:
-        _planner = PlannerAgent()
-    return await _planner.refine(day_plans, destination)

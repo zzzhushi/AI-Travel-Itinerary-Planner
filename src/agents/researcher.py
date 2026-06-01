@@ -9,9 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from google.adk.tools import google_search
-
 from src.agents.base import LlmAgent, _extract_json, _extract_json_dict
+from src.agents.providers import LLMProvider
 
 RESEARCHER_INSTRUCTION = """You are a travel research assistant helping plan a trip itinerary.
 
@@ -82,14 +81,8 @@ def _normalize(raw: list[Any], research_hash: str) -> list[dict]:
 
 
 class ResearcherAgent(LlmAgent):
-    def __init__(self) -> None:
-        super().__init__(
-            name="ResearcherAgent",
-            instruction=RESEARCHER_INSTRUCTION,
-            tools=[google_search],
-            retry_attempts=5,
-            retry_exp_base=7,
-        )
+    def __init__(self, provider: LLMProvider) -> None:
+        super().__init__(provider)
 
     async def research(
         self,
@@ -98,6 +91,7 @@ class ResearcherAgent(LlmAgent):
         is_specific: bool = False,
         research_hash: str = "",
     ) -> tuple[list[dict], str]:
+        """Research a single activity. Returns (options, error)."""
         prompt = _build_prompt(destination, query, is_specific)
         text, err = await self.ask(prompt)
         if err:
@@ -108,71 +102,47 @@ class ResearcherAgent(LlmAgent):
         options = _normalize(raw, research_hash)
         return (options, "") if options else ([], "Agent returned no valid options.")
 
+    async def research_batch(
+        self,
+        destination: str,
+        activities: list[dict],
+    ) -> list[tuple[list[dict], str]]:
+        """Research up to 5 activities in a single API call.
 
-# Lazy singleton — constructed on first call so env vars are loaded before init.
-_researcher: ResearcherAgent | None = None
+        Each activity dict needs: query, is_specific (bool), research_hash (str).
+        Returns a list of (options, error) in the same order as the input.
+        """
+        if not activities:
+            return []
+        prompt = _build_batch_prompt(destination, activities)
+        text, err = await self.ask(prompt)
+        if err:
+            return [([], err)] * len(activities)
+        raw = _extract_json_dict(text)
+        if raw is None:
+            error = f"Could not parse batch JSON:\n{text[:300]}"
+            return [([], error)] * len(activities)
 
+        results: list[tuple[list[dict], str] | None] = [None] * len(activities)
+        missing: list[int] = []
 
-async def research_activity(
-    destination: str,
-    query: str,
-    is_specific: bool = False,
-    research_hash: str = "",
-) -> tuple[list[dict], str]:
-    """Research an activity query for a destination.
+        for i, act in enumerate(activities):
+            options_raw = raw.get(str(i), [])
+            if not isinstance(options_raw, list) or not options_raw:
+                missing.append(i)
+                continue
+            options = _normalize(options_raw, act.get("research_hash", ""))
+            results[i] = (options, "") if options else ([], f"No valid options for: {act['query']}")
 
-    Returns (options, error_message). error_message is empty on success.
-    Each option dict has: name, address, location, maps_search, category, why, research_hash.
-    """
-    global _researcher
-    if _researcher is None:
-        _researcher = ResearcherAgent()
-    return await _researcher.research(destination, query, is_specific, research_hash)
+        # Fall back to individual calls for any activities the model dropped.
+        for i in missing:
+            act = activities[i]
+            opts, err = await self.research(
+                destination,
+                act["query"],
+                act.get("is_specific", False),
+                act.get("research_hash", ""),
+            )
+            results[i] = (opts, err)
 
-
-async def research_activities_batch(
-    destination: str,
-    activities: list[dict],
-) -> list[tuple[list[dict], str]]:
-    """Research up to 5 activities in a single API call.
-
-    Each activity dict needs: query, is_specific (bool), research_hash (str).
-    Returns a list of (options, error) in the same order as the input.
-    """
-    if not activities:
-        return []
-    global _researcher
-    if _researcher is None:
-        _researcher = ResearcherAgent()
-    prompt = _build_batch_prompt(destination, activities)
-    text, err = await _researcher.ask(prompt)
-    if err:
-        return [([], err)] * len(activities)
-    raw = _extract_json_dict(text)
-    if raw is None:
-        error = f"Could not parse batch JSON:\n{text[:300]}"
-        return [([], error)] * len(activities)
-
-    results: list[tuple[list[dict], str] | None] = [None] * len(activities)
-    missing: list[int] = []
-
-    for i, act in enumerate(activities):
-        options_raw = raw.get(str(i), [])
-        if not isinstance(options_raw, list) or not options_raw:
-            missing.append(i)
-            continue
-        options = _normalize(options_raw, act.get("research_hash", ""))
-        results[i] = (options, "") if options else ([], f"No valid options for: {act['query']}")
-
-    # Fall back to individual calls for any activities the model dropped.
-    for i in missing:
-        act = activities[i]
-        opts, err = await _researcher.research(
-            destination,
-            act["query"],
-            act.get("is_specific", False),
-            act.get("research_hash", ""),
-        )
-        results[i] = (opts, err)
-
-    return results  # type: ignore[return-value]
+        return results  # type: ignore[return-value]
