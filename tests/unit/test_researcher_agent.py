@@ -6,7 +6,6 @@ All tests use MockProvider — no Gemini API calls, no network, no env vars need
 import json
 
 import pytest
-import pytest_asyncio
 
 from src.agents.researcher import ResearcherAgent, _normalize, research_activities_batch
 from tests.mocks.provider import MockProvider

@@ -15,7 +15,6 @@ from src.db.queries import (
     mark_researched,
     save_options,
     set_rating,
-    update_trip_num_days,
     upsert_schedule,
 )
 from src.agents.planner import DayPlan, ScheduleItem

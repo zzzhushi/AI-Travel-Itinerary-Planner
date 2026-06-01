@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from abc import ABC, abstractmethod
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ class GeminiProvider(LLMProvider):
         self,
         agent_name: str,
         instruction: str,
-        tools: list = [],
+        tools: Optional[list] = None,
         retry_attempts: int = 5,
         retry_exp_base: int = 7,
     ) -> None:
@@ -45,7 +46,7 @@ class GeminiProvider(LLMProvider):
                 retry_options=_retry_config(retry_attempts, retry_exp_base),
             ),
             instruction=instruction,
-            tools=tools,
+            tools=tools or [],
         )
         self._runner = InMemoryRunner(agent=self._agent)
         self._call_count = 0

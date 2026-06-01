@@ -106,17 +106,7 @@ class ResearcherAgent(LlmAgent):
 _researcher: ResearcherAgent | None = None
 
 
-async def research_activity(
-    destination: str,
-    query: str,
-    is_specific: bool = False,
-    research_hash: str = "",
-) -> tuple[list[dict], str]:
-    """Research an activity query for a destination.
-
-    Returns (options, error_message). error_message is empty on success.
-    Each option dict has: name, address, location, maps_search, category, why, research_hash.
-    """
+def _get_researcher() -> ResearcherAgent:
     global _researcher
     if _researcher is None:
         from google.adk.tools import google_search
@@ -132,7 +122,21 @@ async def research_activity(
                 retry_exp_base=7,
             )
         )
-    return await _researcher.research(destination, query, is_specific, research_hash)
+    return _researcher
+
+
+async def research_activity(
+    destination: str,
+    query: str,
+    is_specific: bool = False,
+    research_hash: str = "",
+) -> tuple[list[dict], str]:
+    """Research an activity query for a destination.
+
+    Returns (options, error_message). error_message is empty on success.
+    Each option dict has: name, address, location, maps_search, category, why, research_hash.
+    """
+    return await _get_researcher().research(destination, query, is_specific, research_hash)
 
 
 async def research_activities_batch(
@@ -146,23 +150,9 @@ async def research_activities_batch(
     """
     if not activities:
         return []
-    global _researcher
-    if _researcher is None:
-        from google.adk.tools import google_search
-
-        from src.agents.provider import GeminiProvider
-
-        _researcher = ResearcherAgent(
-            GeminiProvider(
-                agent_name="ResearcherAgent",
-                instruction=RESEARCHER_INSTRUCTION,
-                tools=[google_search],
-                retry_attempts=5,
-                retry_exp_base=7,
-            )
-        )
+    researcher = _get_researcher()
     prompt = _build_batch_prompt(destination, activities)
-    text, err = await _researcher.ask(prompt)
+    text, err = await researcher.ask(prompt)
     if err:
         return [([], err)] * len(activities)
     raw = _extract_json_dict(text)
@@ -184,7 +174,7 @@ async def research_activities_batch(
     # Fall back to individual calls for any activities the model dropped.
     for i in missing:
         act = activities[i]
-        opts, err = await _researcher.research(
+        opts, err = await researcher.research(
             destination,
             act["query"],
             act.get("is_specific", False),
