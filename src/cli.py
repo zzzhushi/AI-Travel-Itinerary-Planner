@@ -244,6 +244,53 @@ def cmd_generate(session, trip) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Command: View trip
+# ---------------------------------------------------------------------------
+
+def cmd_view_trip(session, trip) -> None:
+    from src.db.queries import get_options_for_trip, get_schedule
+
+    session.refresh(trip)
+    days_label = f"{trip.num_days} days" if trip.num_days else "days TBD"
+    console.print(Panel(
+        f"[bold]{trip.name}[/bold]\n{trip.destination}  ·  {days_label}",
+        expand=False,
+    ))
+
+    # Activities + options
+    activity_options = get_options_for_trip(session, trip.id)
+    if not activity_options:
+        console.print("[dim]No activities yet.[/dim]")
+    else:
+        console.print(f"\n[bold]Activities & Options[/bold]")
+        for act, options in activity_options:
+            researched = "[green]researched[/green]" if act.researched_at else "[yellow]unresearched[/yellow]"
+            specific = " [dim](specific)[/dim]" if act.is_specific else ""
+            console.print(f"\n  [cyan]{act.query}[/cyan]{specific}  {researched}")
+            for opt in options:
+                rating = f"★{opt.user_rating}" if opt.user_rating else "unrated"
+                console.print(f"    • {opt.name}  [{opt.location or '—'}]  [dim]{rating}[/dim]")
+
+    # Schedule
+    items = get_schedule(session, trip.id)
+    if items:
+        console.print(f"\n[bold]Current Itinerary[/bold]")
+        by_day: dict[int, list] = {}
+        for si in items:
+            by_day.setdefault(si.day_number or 0, []).append(si)
+        slot_order = {"morning": 0, "afternoon": 1, "evening": 2}
+        for day_num in sorted(by_day):
+            label = f"Day {day_num}" if day_num else "Unscheduled"
+            console.print(f"\n  [bold]{label}[/bold]")
+            day_items = sorted(by_day[day_num], key=lambda s: slot_order.get(s.time_slot or "", 1))
+            for si in day_items:
+                locked = " [yellow][locked][/yellow]" if si.is_locked else ""
+                console.print(f"    [{si.time_slot or 'anytime':9}] {si.option.name}{locked}")
+    else:
+        console.print("\n[dim]No itinerary generated yet.[/dim]")
+
+
+# ---------------------------------------------------------------------------
 # Trip selection / creation
 # ---------------------------------------------------------------------------
 
@@ -358,7 +405,8 @@ def main_menu(session, trip) -> None:
         console.print(f"  3. Rank options         {rank_tag}")
         console.print(f"  4. Re-rank options")
         console.print(f"  5. Generate itinerary")
-        console.print(f"  6. Switch trip")
+        console.print(f"  6. View trip")
+        console.print(f"  7. Switch trip")
         console.print(f"  0. Exit")
 
         choice = prompt("\nChoice").strip()
@@ -374,6 +422,8 @@ def main_menu(session, trip) -> None:
         elif choice == "5":
             cmd_generate(session, trip)
         elif choice == "6":
+            cmd_view_trip(session, trip)
+        elif choice == "7":
             trip = select_or_create_trip(session)
         elif choice == "0":
             console.print("[dim]Goodbye.[/dim]")
