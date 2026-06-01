@@ -73,7 +73,7 @@ alembic upgrade head
 
 ## Do
 
-- Keep `research_activity()` in `src/agents/researcher.py` as the single Gemini research call.
+- Ensure code comments are updated and unit tests are written for larger changes.
 - Use `Optional[str]` (not `str | None`) in SQLAlchemy `Mapped` columns — Python 3.14 compat.
 - Check `research_hash` before calling the researcher — idempotency is caller's responsibility.
 - Add new activity categories to `ACTIVITY_CATEGORIES` in `src/db/models.py` and `_CATEGORY_SLOT` in `src/agents/planner.py`.

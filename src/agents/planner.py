@@ -16,15 +16,10 @@ from __future__ import annotations
 
 import json
 import math
-import os
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Optional
 
-from google.adk.agents import Agent
-from google.adk.models.google_llm import Gemini
-from google.adk.runners import InMemoryRunner
-from google.genai import types
-
+from src.agents.base import LlmAgent, _extract_json
 from src.tools.maps import haversine_km
 
 # Time slot heuristics by category
@@ -207,27 +202,7 @@ def build_schedule(
     return sorted(days.values(), key=lambda d: d.day_number)
 
 
-def _retry_config():
-    return types.HttpRetryOptions(
-        attempts=3,
-        exp_base=5,
-        initial_delay=1,
-        http_status_codes=[429, 500, 503, 504],
-    )
-
-
-async def refine_schedule_with_llm(
-    day_plans: list[DayPlan],
-    destination: str,
-) -> tuple[list[dict], str]:
-    """
-    Optional LLM pass to improve ordering and add notes within each day.
-    Returns (refined_days, error_message).
-    Each day: {"day": int, "items": [{"option_id", "name", "time_slot", "note"}]}
-    """
-    if os.getenv("GOOGLE_API_KEY"):
-        os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "FALSE")
-
+def _build_refine_prompt(day_plans: list[DayPlan], destination: str) -> str:
     input_data = [
         {
             "day": dp.day_number,
@@ -244,52 +219,44 @@ async def refine_schedule_with_llm(
         }
         for dp in day_plans
     ]
-
-    prompt = (
+    return (
         f"Destination: {destination}\n\n"
         f"Draft schedule:\n{json.dumps(input_data, indent=2)}\n\n"
         f"Improve the ordering and add a brief note for each item explaining the logic."
     )
 
-    agent = Agent(
-        name="PlannerAgent",
-        model=Gemini(model="gemini-2.5-flash", retry_options=_retry_config()),
-        instruction=PLANNER_INSTRUCTION,
-    )
-    runner = InMemoryRunner(agent=agent)
 
-    try:
-        response = await runner.run_debug(prompt)
-    except Exception as e:
-        return [], f"Planner agent error: {e}"
+class PlannerAgent(LlmAgent):
+    def __init__(self) -> None:
+        super().__init__(
+            name="PlannerAgent",
+            instruction=PLANNER_INSTRUCTION,
+            retry_attempts=3,
+            retry_exp_base=5,
+        )
 
-    text = _extract_text(response)
-    if not text:
-        return [], "No text from planner agent."
-
-    import re
-    text = text.strip()
-    m = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
-    if m:
-        text = m.group(1).strip()
-    try:
-        data = json.loads(text)
-        return data if isinstance(data, list) else [], ""
-    except json.JSONDecodeError as e:
-        return [], f"Could not parse planner JSON: {e}"
+    async def refine(
+        self,
+        day_plans: list[DayPlan],
+        destination: str,
+    ) -> tuple[list[dict], str]:
+        prompt = _build_refine_prompt(day_plans, destination)
+        text, err = await self.ask(prompt)
+        if err:
+            return [], err.replace("Agent error", "Planner agent error")
+        raw = _extract_json(text)
+        if raw is None:
+            return [], f"Could not parse planner JSON from response:\n{text[:300]}"
+        return raw if isinstance(raw, list) else [], ""
 
 
-def _extract_text(response: Any) -> str:
-    if isinstance(response, str):
-        return response
-    if hasattr(response, "content") and response.content:
-        c = response.content
-        return c if isinstance(c, str) else str(c)
-    if hasattr(response, "events") and response.events:
-        for ev in response.events:
-            if hasattr(ev, "content") and ev.content:
-                part = ev.content
-                text = part.text if hasattr(part, "text") else str(part)
-                if text:
-                    return text
-    return ""
+async def refine_schedule_with_llm(
+    day_plans: list[DayPlan],
+    destination: str,
+) -> tuple[list[dict], str]:
+    """Optional LLM pass to improve ordering and add notes within each day.
+
+    Returns (refined_days, error_message).
+    Each day: {"day": int, "items": [{"option_id", "name", "time_slot", "note"}]}
+    """
+    return await PlannerAgent().refine(day_plans, destination)
