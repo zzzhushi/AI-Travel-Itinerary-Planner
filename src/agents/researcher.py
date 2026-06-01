@@ -155,16 +155,28 @@ async def research_activity(
 
 
 def _extract_text(response: Any) -> str:
+    # run_debug returns list[Event] — find the final response event
+    if isinstance(response, list):
+        for event in reversed(response):
+            if hasattr(event, "is_final_response") and event.is_final_response():
+                if event.content and event.content.parts:
+                    for part in event.content.parts:
+                        if hasattr(part, "text") and part.text:
+                            return part.text
+        # fallback: any event with text parts
+        for event in reversed(response):
+            if hasattr(event, "content") and event.content and hasattr(event.content, "parts"):
+                for part in event.content.parts:
+                    if hasattr(part, "text") and part.text:
+                        return part.text
     if isinstance(response, str):
         return response
     if hasattr(response, "content") and response.content:
         c = response.content
-        return c if isinstance(c, str) else str(c)
-    if hasattr(response, "events") and response.events:
-        for ev in response.events:
-            if hasattr(ev, "content") and ev.content:
-                part = ev.content
-                text = part.text if hasattr(part, "text") else str(part)
-                if text:
-                    return text
+        if isinstance(c, str):
+            return c
+        if hasattr(c, "parts") and c.parts:
+            for part in c.parts:
+                if hasattr(part, "text") and part.text:
+                    return part.text
     return ""
