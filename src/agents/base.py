@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from typing import Any, Protocol, runtime_checkable
+
+logger = logging.getLogger(__name__)
 
 from google.adk.agents import Agent
 from google.adk.models.google_llm import Gemini
@@ -53,6 +56,12 @@ class LlmAgent:
         """
         session_id = f"session_{self._call_count}"
         self._call_count += 1
+        logger.info(
+            "[%s] call #%d prompt:\n%s",
+            self._agent.name,
+            self._call_count,
+            prompt,
+        )
         try:
             response = await self._runner.run_debug(prompt, session_id=session_id)
             text = _extract_text(response)
@@ -132,6 +141,35 @@ def _extract_json(text: str) -> list[dict] | None:
                 try:
                     data = json.loads(text[i : j + 1])
                     return data if isinstance(data, list) else None
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
+def _extract_json_dict(text: str) -> dict | None:
+    """Extract a JSON object from agent response text, handling code fences."""
+    text = text.strip()
+    m = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+    if m:
+        text = m.group(1).strip()
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, dict) else None
+    except json.JSONDecodeError:
+        pass
+    i = text.find("{")
+    if i == -1:
+        return None
+    depth = 0
+    for j, c in enumerate(text[i:], i):
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    data = json.loads(text[i : j + 1])
+                    return data if isinstance(data, dict) else None
                 except json.JSONDecodeError:
                     return None
     return None

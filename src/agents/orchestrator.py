@@ -11,7 +11,7 @@ import asyncio
 import hashlib
 from typing import Optional
 
-from src.agents.researcher import research_activity
+from src.agents.researcher import research_activity, research_activities_batch
 from src.agents.planner import build_schedule, refine_schedule_with_llm, DayPlan
 from src.tools.maps import get_place_info, maps_search_link
 
@@ -51,7 +51,10 @@ async def research_and_enrich(
     if err:
         return [], err
 
-    # Enrich with Maps data
+    return _enrich_options(options, destination), ""
+
+
+def _enrich_options(options: list[dict], destination: str) -> list[dict]:
     enriched = []
     for opt in options:
         maps_query = opt.get("maps_search") or f"{opt['name']} {destination}"
@@ -66,8 +69,46 @@ async def research_and_enrich(
             opt["latitude"] = None
             opt["longitude"] = None
         enriched.append(opt)
+    return enriched
 
-    return enriched, ""
+
+async def research_and_enrich_batch(
+    trip_id: int,
+    destination: str,
+    activities: list[dict],
+    batch_size: int = 10,
+) -> list[tuple[list[dict], str]]:
+    """Batch version of research_and_enrich. Processes activities in groups of batch_size.
+
+    Each activity dict needs: query. Optional: is_specific, existing_hash.
+    Returns a list of (options, error) in the same order as the input.
+    """
+    if not activities:
+        return []
+
+    to_research: list[tuple[int, dict]] = []
+    results: list[tuple[list[dict], str]] = [([], "")] * len(activities)
+
+    for i, act in enumerate(activities):
+        h = _make_hash(trip_id, act["query"])
+        if act.get("existing_hash") == h:
+            continue
+        to_research.append((i, {
+            "query": act["query"],
+            "is_specific": act.get("is_specific", False),
+            "research_hash": h,
+        }))
+
+    for start in range(0, len(to_research), batch_size):
+        chunk = to_research[start:start + batch_size]
+        batch_results = await research_activities_batch(destination, [a for _, a in chunk])
+        for (orig_idx, _), (options, err) in zip(chunk, batch_results):
+            if err:
+                results[orig_idx] = ([], err)
+            else:
+                results[orig_idx] = (_enrich_options(options, destination), "")
+
+    return results
 
 
 async def generate_schedule(

@@ -1,7 +1,11 @@
 """Entry point for the CLI itinerary planner."""
 
 import asyncio
+import logging
 import sys
+
+logging.basicConfig(format="%(name)s: %(message)s")
+logging.getLogger("src.agents.base").setLevel(logging.DEBUG)
 
 
 def main():

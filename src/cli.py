@@ -217,19 +217,14 @@ async def run_interactive(dry_run: bool = False) -> None:
         return
 
     # --- Step 3: Research ---
-    from src.agents.orchestrator import research_and_enrich
+    from src.agents.orchestrator import research_and_enrich_batch
 
     console.print(f"\n[bold]Researching {len(trip.activities)} activities for {destination}...[/bold]")
-    for act in trip.activities:
-        query = act["query"]
-        console.print(f"\n  Researching: [cyan]{query}[/cyan]")
+    batch_results = await research_and_enrich_batch(1, destination, trip.activities)
 
-        options, err = await research_and_enrich(
-            trip_id=1,  # In-memory trip, ID is nominal
-            destination=destination,
-            query=query,
-            is_specific=act.get("is_specific", False),
-        )
+    for act, (options, err) in zip(trip.activities, batch_results):
+        query = act["query"]
+        console.print(f"\n  [cyan]{query}[/cyan]")
 
         if err:
             console.print(f"  [red]Error: {err}[/red]")
@@ -330,12 +325,16 @@ async def run_from_json(json_path: str) -> None:
     trip = TripSession(name=name, destination=destination, num_days=num_days)
     trip.activities = activities
 
-    from src.agents.orchestrator import research_and_enrich, generate_schedule
+    from src.agents.orchestrator import research_and_enrich_batch, generate_schedule
 
-    for act in activities:
-        query = act["query"] if isinstance(act, dict) else act
-        is_specific = act.get("is_specific", False) if isinstance(act, dict) else False
-        options, err = await research_and_enrich(1, destination, query, is_specific)
+    activity_list = [
+        {"query": a["query"] if isinstance(a, dict) else a, "is_specific": a.get("is_specific", False) if isinstance(a, dict) else False}
+        for a in activities
+    ]
+    batch_results = await research_and_enrich_batch(1, destination, activity_list)
+
+    for act, (options, err) in zip(activity_list, batch_results):
+        query = act["query"]
         if err:
             console.print(f"[red]{query}: {err}[/red]")
             continue
