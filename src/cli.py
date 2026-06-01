@@ -1,11 +1,4 @@
-"""
-Interactive CLI for the itinerary planner.
-
-Usage:
-    python run_cli.py                   # interactive mode
-    python run_cli.py --dry-run         # validate imports and config without API calls
-    python run_cli.py --json trip.json  # load a trip from JSON and run non-interactively
-"""
+"""DB-backed interactive CLI for the itinerary planner."""
 
 from __future__ import annotations
 
@@ -20,27 +13,10 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich import print as rprint
 
-load_dotenv()
+load_dotenv(override=True)
 
 console = Console()
-
-
-# ---------------------------------------------------------------------------
-# Config validation
-# ---------------------------------------------------------------------------
-
-def check_config(dry_run: bool = False) -> list[str]:
-    """Return list of missing/invalid config items."""
-    issues = []
-    if not os.getenv("GOOGLE_API_KEY"):
-        issues.append("GOOGLE_API_KEY not set (required for Gemini + Google Search)")
-    if not os.getenv("GOOGLE_MAPS_API_KEY"):
-        issues.append("GOOGLE_MAPS_API_KEY not set (optional — geo clustering will be skipped)")
-    if not os.getenv("DATABASE_URL"):
-        issues.append("DATABASE_URL not set (will use JSON-only output)")
-    return issues
 
 
 # ---------------------------------------------------------------------------
@@ -57,8 +33,13 @@ def prompt(text: str, default: str = "") -> str:
     return val or default
 
 
-def prompt_int(text: str, min_val: int = 1, max_val: int = 100, default: Optional[int] = None) -> Optional[int]:
-    suffix = f" [{default}]" if default is not None else " (press Enter to skip)"
+def prompt_int(
+    text: str,
+    min_val: int = 1,
+    max_val: int = 100,
+    default: Optional[int] = None,
+) -> Optional[int]:
+    suffix = f" [{default}]" if default is not None else " (Enter to skip)"
     while True:
         raw = prompt(text + suffix)
         if not raw:
@@ -72,246 +53,372 @@ def prompt_int(text: str, min_val: int = 1, max_val: int = 100, default: Optiona
             console.print("[red]Please enter a number.[/red]")
 
 
-def prompt_list(text: str) -> list[str]:
-    raw = prompt(text + " (comma-separated, or press Enter to skip)")
-    if not raw:
-        return []
-    return [x.strip() for x in raw.split(",") if x.strip()]
+# ---------------------------------------------------------------------------
+# Command: Add activities
+# ---------------------------------------------------------------------------
+
+def cmd_add_activities(session, trip) -> None:
+    from src.db.models import ACTIVITY_CATEGORIES
+    from src.db.queries import add_activity
+
+    console.print(f"\n[bold]Add Activities[/bold]")
+    console.print(f"Categories: {', '.join(ACTIVITY_CATEGORIES)}")
+    console.print("Press Enter with no input to finish.\n")
+
+    added = 0
+    while True:
+        query = prompt("Activity (or Enter to finish)")
+        if not query:
+            break
+        cat = prompt("Category (or Enter to skip)").lower()
+        category = cat if cat in ACTIVITY_CATEGORIES else None
+        is_specific = prompt("Specific place? [y/N]", default="n").lower() == "y"
+        add_activity(session, trip.id, query, category, is_specific)
+        console.print(f"  [green]Added:[/green] {query!r}")
+        added += 1
+
+    if added:
+        console.print(f"[green]{added} activit{'y' if added == 1 else 'ies'} added.[/green]")
 
 
 # ---------------------------------------------------------------------------
-# Trip data model (in-memory for CLI)
+# Command: Research options
 # ---------------------------------------------------------------------------
 
-class TripSession:
-    def __init__(self, name: str, destination: str, num_days: Optional[int]):
-        self.name = name
-        self.destination = destination
-        self.num_days = num_days
-        self.activities: list[dict] = []   # [{query, is_specific, category}]
-        self.options: list[dict] = []      # [{option_id, name, category, ...}]
-        self._option_counter = 0
-
-    def add_option(self, activity_query: str, opt: dict) -> dict:
-        self._option_counter += 1
-        record = {
-            "option_id": self._option_counter,
-            "activity_query": activity_query,
-            "name": opt["name"],
-            "address": opt.get("address", ""),
-            "location": opt.get("location", ""),
-            "maps_link": opt.get("maps_link", ""),
-            "latitude": opt.get("latitude"),
-            "longitude": opt.get("longitude"),
-            "category": opt.get("category", "other"),
-            "why": opt.get("why", ""),
-            "user_rating": None,
-            "is_locked": False,
-        }
-        self.options.append(record)
-        return record
-
-    def to_dict(self) -> dict:
-        return {
-            "name": self.name,
-            "destination": self.destination,
-            "num_days": self.num_days,
-            "activities": self.activities,
-            "options": self.options,
-        }
-
-
-# ---------------------------------------------------------------------------
-# Display helpers
-# ---------------------------------------------------------------------------
-
-def display_options(options: list[dict], activity_query: str) -> None:
-    table = Table(title=f"Options for: [bold]{activity_query}[/bold]", show_lines=True)
-    table.add_column("#", style="dim", width=3)
-    table.add_column("Name", style="bold")
-    table.add_column("Location")
-    table.add_column("Category", style="cyan")
-    table.add_column("Maps", style="blue")
-    table.add_column("Why")
-
-    for i, opt in enumerate(options, 1):
-        maps = opt.get("maps_link", "")
-        maps_display = "[link]" if maps else "—"
-        table.add_row(
-            str(i),
-            opt["name"],
-            opt.get("location", ""),
-            opt.get("category", ""),
-            maps_display,
-            opt.get("why", "")[:60],
-        )
-    console.print(table)
-
-
-def display_schedule(day_plans, llm_days: list[dict]) -> None:
-    if llm_days:
-        console.print(Panel("[bold green]AI-Refined Schedule[/bold green]"))
-        for day in llm_days:
-            console.print(f"\n[bold]Day {day['day']}[/bold]")
-            for item in day.get("items", []):
-                slot = item.get("time_slot", "")
-                note = item.get("note", "")
-                console.print(f"  [{slot}] {item['name']}" + (f" — {note}" if note else ""))
-    else:
-        console.print(Panel("[bold green]Schedule[/bold green]"))
-        for dp in day_plans:
-            console.print(f"\n[bold]Day {dp.day_number}[/bold]")
-            for item in dp.items:
-                slot = item.time_slot or "anytime"
-                console.print(f"  [{slot}] {item.name}")
-
-
-# ---------------------------------------------------------------------------
-# Main CLI flow
-# ---------------------------------------------------------------------------
-
-async def run_interactive(dry_run: bool = False) -> None:
-    console.print(Panel("[bold cyan]🗺  Itinerary Planner[/bold cyan]", expand=False))
-
-    # Config check
-    issues = check_config(dry_run)
-    for issue in issues:
-        console.print(f"[yellow]⚠  {issue}[/yellow]")
-
-    if dry_run:
-        console.print("\n[green]✓ Dry run complete — imports and config check passed.[/green]")
-        _print_config_summary()
-        return
-
-    # --- Step 1: Create trip ---
-    console.print("\n[bold]New Trip[/bold]")
-    name = prompt("Trip name (e.g. Japan September 2026)")
-    if not name:
-        console.print("[red]Trip name is required.[/red]")
-        return
-    destination = prompt("Destination (e.g. Tokyo, Japan)")
-    if not destination:
-        console.print("[red]Destination is required.[/red]")
-        return
-    num_days = prompt_int("Number of days", min_val=1, max_val=90)
-
-    trip = TripSession(name=name, destination=destination, num_days=num_days)
-
-    # --- Step 2: Seed activities ---
-    console.print("\n[bold]Activities[/bold]")
-    console.print("Enter activities you want to do. Can be vague ('ramen') or specific ('Ichiran Ramen Shinjuku').")
-    seed_queries = prompt_list("Seed activities")
-    for q in seed_queries:
-        trip.activities.append({"query": q, "is_specific": False})
-
-    if not trip.activities:
-        console.print("[yellow]No activities entered. Add them now:[/yellow]")
-        while True:
-            q = prompt("Activity (or press Enter to continue)")
-            if not q:
-                break
-            trip.activities.append({"query": q, "is_specific": False})
-
-    if not trip.activities:
-        console.print("[red]No activities. Exiting.[/red]")
-        return
-
-    # --- Step 3: Research ---
+def cmd_research(session, trip) -> None:
+    from src.db.queries import get_unresearched_activities, save_options, mark_researched
     from src.agents.orchestrator import research_and_enrich_batch
 
-    console.print(f"\n[bold]Researching {len(trip.activities)} activities for {destination}...[/bold]")
-    batch_results = await research_and_enrich_batch(1, destination, trip.activities)
-
-    for act, (options, err) in zip(trip.activities, batch_results):
-        query = act["query"]
-        console.print(f"\n  [cyan]{query}[/cyan]")
-
-        if err:
-            console.print(f"  [red]Error: {err}[/red]")
-            continue
-        if not options:
-            console.print(f"  [yellow]No options found.[/yellow]")
-            continue
-
-        display_options(options, query)
-
-        # Add options to trip session
-        for opt in options:
-            trip.add_option(query, opt)
-
-    if not trip.options:
-        console.print("[red]No options were found. Check your API key and try again.[/red]")
+    activities = get_unresearched_activities(session, trip.id)
+    if not activities:
+        console.print("[yellow]All activities have already been researched.[/yellow]")
         return
 
-    # --- Step 4: Rate options ---
-    console.print(Panel("[bold]Rate Options[/bold]\nRate each option 1–5 (or 0 to skip). Higher = more interested."))
+    console.print(f"\n[bold]Researching {len(activities)} activit{'y' if len(activities) == 1 else 'ies'}...[/bold]")
 
-    for opt in trip.options:
-        rating = prompt_int(
-            f"  [{opt['category']}] {opt['name']} ({opt.get('location', '')})",
-            min_val=0,
-            max_val=5,
-            default=0,
-        )
-        opt["user_rating"] = rating if rating else None
+    batch_input = [
+        {
+            "query": act.query,
+            "is_specific": act.is_specific,
+        }
+        for act in activities
+    ]
 
-    # --- Step 5: Generate schedule ---
-    if num_days is None:
-        num_days = prompt_int("How many days for the schedule?", min_val=1, max_val=90, default=5)
-        trip.num_days = num_days
+    results = asyncio.run(
+        research_and_enrich_batch(trip.id, trip.destination, batch_input)
+    )
 
-    console.print(f"\n[bold]Generating schedule for {num_days} days...[/bold]")
+    total_saved = 0
+    for act, (options, err) in zip(activities, results):
+        if err:
+            console.print(f"  [cyan]{act.query}[/cyan] [red]error: {err}[/red]")
+            continue
+        save_options(session, act.id, options)
+        mark_researched(session, act.id)
+        total_saved += len(options)
+        count_str = f"{len(options)} option{'s' if len(options) != 1 else ''}"
+        console.print(f"  [cyan]{act.query}[/cyan] [green]→ {count_str}[/green]")
 
+    console.print(f"\n[green]Done. {total_saved} options saved.[/green]")
+
+
+# ---------------------------------------------------------------------------
+# Command: Rank options
+# ---------------------------------------------------------------------------
+
+def cmd_rank(session, trip, rerank: bool = False) -> None:
+    from src.db.queries import get_options_for_trip, set_rating
+
+    activity_options = get_options_for_trip(session, trip.id)
+    if not activity_options:
+        console.print("[yellow]No options to rank. Run research first.[/yellow]")
+        return
+
+    console.print(f"\n[bold]{'Re-rank' if rerank else 'Rank'} Options[/bold]")
+    console.print("Rate 1–5 (1=low interest, 5=must-do). Press Enter to keep current.\n")
+
+    updated = 0
+    for act, options in activity_options:
+        if not rerank and all(o.user_rating is not None for o in options):
+            continue
+
+        table = Table(title=f"[bold cyan]{act.query}[/bold cyan]", show_lines=True)
+        table.add_column("#", width=3, style="dim")
+        table.add_column("Name", style="bold", min_width=20)
+        table.add_column("Location", min_width=12)
+        table.add_column("Rating", width=7)
+        for i, opt in enumerate(options, 1):
+            rating_str = str(opt.user_rating) if opt.user_rating is not None else "—"
+            table.add_row(str(i), opt.name, opt.location or "—", rating_str)
+        console.print(table)
+
+        for opt in options:
+            if not rerank and opt.user_rating is not None:
+                continue
+            current = f"current: {opt.user_rating}" if opt.user_rating is not None else "unrated"
+            rating = prompt_int(
+                f"  {opt.name} ({current})",
+                min_val=1,
+                max_val=5,
+                default=opt.user_rating,
+            )
+            if rating != opt.user_rating:
+                set_rating(session, opt.id, rating)
+                updated += 1
+
+    console.print(f"\n[green]{updated} rating{'s' if updated != 1 else ''} updated.[/green]")
+
+
+# ---------------------------------------------------------------------------
+# Command: Generate itinerary
+# ---------------------------------------------------------------------------
+
+def cmd_generate(session, trip) -> None:
+    from src.db.queries import (
+        get_rated_options_for_schedule,
+        upsert_schedule,
+        update_trip_num_days,
+    )
     from src.agents.orchestrator import generate_schedule
 
+    num_days = trip.num_days
+    if not num_days:
+        num_days = prompt_int("Number of days for the itinerary", min_val=1, max_val=90)
+        if not num_days:
+            console.print("[red]Number of days is required.[/red]")
+            return
+        update_trip_num_days(session, trip.id, num_days)
+        session.refresh(trip)
+
+    options = get_rated_options_for_schedule(session, trip.id)
+    if not options:
+        console.print("[yellow]No rated options found. Rate some options first.[/yellow]")
+        return
+
+    if len(options) > 60:
+        console.print(
+            f"[yellow]Warning: {len(options)} rated options for {num_days} days — "
+            "consider raising your ratings to filter to your top picks.[/yellow]"
+        )
+
+    console.print(
+        f"\n[bold]Generating itinerary:[/bold] {num_days} days, {len(options)} options"
+    )
     use_llm = prompt("Use AI to refine schedule ordering? [Y/n]", default="y").lower() != "n"
 
-    day_plans, llm_days, warn = await generate_schedule(
-        destination=destination,
-        options=trip.options,
-        num_days=num_days,
-        use_llm_refinement=use_llm,
+    day_plans, llm_days, warn = asyncio.run(
+        generate_schedule(
+            destination=trip.destination,
+            options=options,
+            num_days=num_days,
+            use_llm_refinement=use_llm,
+            min_rating=1,
+        )
     )
 
     if warn:
         console.print(f"[yellow]{warn}[/yellow]")
 
-    display_schedule(day_plans, llm_days)
+    upsert_schedule(session, trip.id, day_plans)
+    console.print("[green]Schedule saved.[/green]\n")
 
-    # --- Step 6: Save output ---
-    save = prompt("\nSave to JSON? [Y/n]", default="y").lower() != "n"
-    if save:
-        output_path = Path(f"trip_{name.lower().replace(' ', '_')}.json")
-        data = trip.to_dict()
-        data["schedule"] = llm_days if llm_days else [
-            {
-                "day": dp.day_number,
-                "items": [
-                    {
-                        "option_id": i.option_id,
-                        "name": i.name,
-                        "time_slot": i.time_slot,
-                        "category": i.category,
-                    }
-                    for i in dp.items
-                ],
-            }
-            for dp in day_plans
-        ]
-        output_path.write_text(json.dumps(data, indent=2, default=str))
-        console.print(f"[green]✓ Saved to {output_path}[/green]")
+    if llm_days:
+        console.print(Panel("[bold green]AI-Refined Schedule[/bold green]"))
+        for day in llm_days:
+            console.print(f"[bold]Day {day['day']}[/bold]")
+            for item in day.get("items", []):
+                slot = item.get("time_slot", "anytime")
+                note = item.get("note", "")
+                line = f"  [{slot:9}] {item['name']}"
+                if note:
+                    line += f"  — {note}"
+                console.print(line)
+            console.print()
+    else:
+        console.print(Panel("[bold green]Schedule[/bold green]"))
+        for dp in day_plans:
+            console.print(f"[bold]Day {dp.day_number}[/bold]")
+            for item in dp.items:
+                console.print(f"  [{item.time_slot or 'anytime':9}] {item.name}")
+            console.print()
 
+
+# ---------------------------------------------------------------------------
+# Trip selection / creation
+# ---------------------------------------------------------------------------
+
+def select_or_create_trip(session):
+    from src.db.models import ACTIVITY_CATEGORIES
+    from src.db.queries import (
+        get_trips,
+        create_trip,
+        add_activity,
+        get_unresearched_count,
+        get_unrated_count,
+        get_activities,
+    )
+
+    trips = get_trips(session)
+
+    if trips:
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("#", width=3, style="dim")
+        table.add_column("Name", style="bold")
+        table.add_column("Destination")
+        table.add_column("Days", width=5)
+        table.add_column("Activities", width=10)
+        table.add_column("Status")
+        for i, t in enumerate(trips, 1):
+            days_str = str(t.num_days) if t.num_days else "?"
+            act_count = len(get_activities(session, t.id))
+            unresearched = get_unresearched_count(session, t.id)
+            unrated = get_unrated_count(session, t.id)
+            parts = []
+            if unresearched:
+                parts.append(f"[yellow]{unresearched} unresearched[/yellow]")
+            if unrated:
+                parts.append(f"[cyan]{unrated} unrated[/cyan]")
+            if not parts:
+                parts.append("[green]ready[/green]")
+            table.add_row(str(i), t.name, t.destination, days_str, str(act_count), ", ".join(parts))
+        console.print(table)
+
+        raw = prompt(f"\nSelect trip [1-{len(trips)}] or 'n' to create new")
+        if raw.lower() != "n":
+            try:
+                idx = int(raw) - 1
+                if 0 <= idx < len(trips):
+                    return trips[idx]
+            except ValueError:
+                pass
+            console.print("[red]Invalid selection.[/red]")
+            return select_or_create_trip(session)
+    else:
+        console.print("[dim]No existing trips.[/dim]")
+
+    # Create new trip
+    console.print("\n[bold]Create New Trip[/bold]")
+    name = prompt("Trip name")
+    if not name:
+        console.print("[red]Name is required.[/red]")
+        sys.exit(1)
+    destination = prompt("Destination")
+    if not destination:
+        console.print("[red]Destination is required.[/red]")
+        sys.exit(1)
+    num_days = prompt_int("Number of days", min_val=1, max_val=90)
+
+    trip = create_trip(session, name, destination, num_days)
+    console.print(f"[green]Created:[/green] {trip.name}")
+
+    # Optional seed activity
+    seed = prompt("\nSeed activity (or Enter to skip)")
+    if seed:
+        cat = prompt("Category (or Enter to skip)").lower()
+        category = cat if cat in ACTIVITY_CATEGORIES else None
+        add_activity(session, trip.id, seed, category, False)
+        console.print(f"  [green]Added:[/green] {seed!r}")
+
+    return trip
+
+
+# ---------------------------------------------------------------------------
+# Main menu loop
+# ---------------------------------------------------------------------------
+
+def main_menu(session, trip) -> None:
+    from src.db.queries import (
+        get_unresearched_count,
+        get_unrated_count,
+        get_activities,
+    )
+
+    while True:
+        session.refresh(trip)
+        unresearched = get_unresearched_count(session, trip.id)
+        unrated = get_unrated_count(session, trip.id)
+        act_count = len(get_activities(session, trip.id))
+        days_label = f"{trip.num_days} days" if trip.num_days else "days TBD"
+
+        console.rule(f"[bold]{trip.name}[/bold]  {trip.destination}  ·  {days_label}")
+
+        research_tag = (
+            f"[yellow][{unresearched} unresearched][/yellow]"
+            if unresearched
+            else "[green][all researched][/green]"
+        )
+        rank_tag = (
+            f"[cyan][{unrated} unrated][/cyan]"
+            if unrated
+            else "[green][all rated][/green]"
+        )
+
+        console.print(f"  1. Add activities       ({act_count} total)")
+        console.print(f"  2. Research options     {research_tag}")
+        console.print(f"  3. Rank options         {rank_tag}")
+        console.print(f"  4. Re-rank options")
+        console.print(f"  5. Generate itinerary")
+        console.print(f"  6. Switch trip")
+        console.print(f"  0. Exit")
+
+        choice = prompt("\nChoice").strip()
+
+        if choice == "1":
+            cmd_add_activities(session, trip)
+        elif choice == "2":
+            cmd_research(session, trip)
+        elif choice == "3":
+            cmd_rank(session, trip, rerank=False)
+        elif choice == "4":
+            cmd_rank(session, trip, rerank=True)
+        elif choice == "5":
+            cmd_generate(session, trip)
+        elif choice == "6":
+            trip = select_or_create_trip(session)
+        elif choice == "0":
+            console.print("[dim]Goodbye.[/dim]")
+            sys.exit(0)
+        else:
+            console.print("[red]Invalid choice.[/red]")
+
+
+# ---------------------------------------------------------------------------
+# Entry points
+# ---------------------------------------------------------------------------
 
 def _print_config_summary() -> None:
-    console.print("\nConfig status:")
     for key in ["GOOGLE_API_KEY", "GOOGLE_MAPS_API_KEY", "DATABASE_URL"]:
         val = os.getenv(key, "")
-        status = "[green]✓ set[/green]" if val else "[yellow]✗ not set[/yellow]"
+        status = "[green]set[/green]" if val else "[yellow]not set[/yellow]"
         console.print(f"  {key}: {status}")
 
 
+def run_interactive(dry_run: bool = False) -> None:
+    console.print(Panel("[bold cyan]Itinerary Planner[/bold cyan]", expand=False))
+
+    if dry_run:
+        _print_config_summary()
+        console.print("\n[green]Dry run complete — imports and config check passed.[/green]")
+        return
+
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        console.print("[red]DATABASE_URL not set.[/red]")
+        console.print("Add to .env:  DATABASE_URL=postgresql+asyncpg://postgres:password@localhost/itinerary")
+        sys.exit(1)
+
+    from src.db.database import get_sync_session_factory
+
+    Session = get_sync_session_factory()
+    with Session() as session:
+        trip = select_or_create_trip(session)
+        main_menu(session, trip)
+
+
 async def run_from_json(json_path: str) -> None:
-    """Non-interactive mode: load trip config from JSON and run research + planning."""
+    """Non-interactive mode: load trip config from JSON, research, plan, save output."""
+    from src.agents.orchestrator import research_and_enrich_batch, generate_schedule
+
     data = json.loads(Path(json_path).read_text())
     destination = data.get("destination", "")
     name = data.get("name", "trip")
@@ -322,37 +429,81 @@ async def run_from_json(json_path: str) -> None:
         console.print("[red]JSON must have 'destination' and 'activities'.[/red]")
         return
 
-    trip = TripSession(name=name, destination=destination, num_days=num_days)
-    trip.activities = activities
-
-    from src.agents.orchestrator import research_and_enrich_batch, generate_schedule
-
     activity_list = [
-        {"query": a["query"] if isinstance(a, dict) else a, "is_specific": a.get("is_specific", False) if isinstance(a, dict) else False}
+        {
+            "query": a["query"] if isinstance(a, dict) else a,
+            "is_specific": a.get("is_specific", False) if isinstance(a, dict) else False,
+        }
         for a in activities
     ]
-    batch_results = await research_and_enrich_batch(1, destination, activity_list)
 
-    for act, (options, err) in zip(activity_list, batch_results):
-        query = act["query"]
+    console.print(f"[bold]Researching {len(activity_list)} activities for {destination}...[/bold]")
+    batch_results = await research_and_enrich_batch(0, destination, activity_list)
+
+    options = []
+    counter = 0
+    for act, (opts, err) in zip(activity_list, batch_results):
         if err:
-            console.print(f"[red]{query}: {err}[/red]")
+            console.print(f"[red]{act['query']}: {err}[/red]")
             continue
-        for opt in options:
-            o = trip.add_option(query, opt)
-            o["user_rating"] = 4  # Default rating for non-interactive mode
+        for opt in opts:
+            counter += 1
+            options.append({
+                "option_id": counter,
+                "name": opt["name"],
+                "category": opt.get("category", "other"),
+                "latitude": opt.get("latitude"),
+                "longitude": opt.get("longitude"),
+                "user_rating": 4,
+                "is_locked": False,
+            })
+
+    if not options:
+        console.print("[red]No options found.[/red]")
+        return
 
     day_plans, llm_days, warn = await generate_schedule(
         destination=destination,
-        options=trip.options,
+        options=options,
         num_days=num_days or 3,
         use_llm_refinement=True,
+        min_rating=1,
     )
     if warn:
         console.print(f"[yellow]{warn}[/yellow]")
 
-    display_schedule(day_plans, llm_days)
+    if llm_days:
+        console.print(Panel("[bold green]AI-Refined Schedule[/bold green]"))
+        for day in llm_days:
+            console.print(f"[bold]Day {day['day']}[/bold]")
+            for item in day.get("items", []):
+                slot = item.get("time_slot", "anytime")
+                note = item.get("note", "")
+                console.print(f"  [{slot:9}] {item['name']}" + (f"  — {note}" if note else ""))
+            console.print()
+    else:
+        console.print(Panel("[bold green]Schedule[/bold green]"))
+        for dp in day_plans:
+            console.print(f"[bold]Day {dp.day_number}[/bold]")
+            for item in dp.items:
+                console.print(f"  [{item.time_slot or 'anytime':9}] {item.name}")
+            console.print()
 
     out_path = Path(f"trip_{name.lower().replace(' ', '_')}_output.json")
-    out_path.write_text(json.dumps(trip.to_dict(), indent=2, default=str))
-    console.print(f"[green]✓ Saved to {out_path}[/green]")
+    result = {
+        "name": name,
+        "destination": destination,
+        "num_days": num_days,
+        "schedule": llm_days or [
+            {
+                "day": dp.day_number,
+                "items": [
+                    {"option_id": i.option_id, "name": i.name, "time_slot": i.time_slot}
+                    for i in dp.items
+                ],
+            }
+            for dp in day_plans
+        ],
+    }
+    out_path.write_text(json.dumps(result, indent=2, default=str))
+    console.print(f"[green]Saved to {out_path}[/green]")

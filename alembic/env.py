@@ -7,13 +7,16 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
+from dotenv import load_dotenv
+
+load_dotenv(override=True)
 
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Import models so Alembic sees them for autogenerate
-from web.models import Base  # noqa: F401
+from src.db.models import Base  # noqa: F401
 target_metadata = Base.metadata
 
 config.set_main_option("sqlalchemy.url", os.environ["DATABASE_URL"])

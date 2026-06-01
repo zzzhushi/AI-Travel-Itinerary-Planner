@@ -25,7 +25,7 @@ def main():
     if json_path:
         asyncio.run(run_from_json(json_path))
     else:
-        asyncio.run(run_interactive(dry_run=dry_run))
+        run_interactive(dry_run=dry_run)
 
 
 if __name__ == "__main__":

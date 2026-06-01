@@ -97,6 +97,7 @@ class Activity(Base):
     category: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     # True when the user already has a specific place in mind (skip multi-option research)
     is_specific: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    researched_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     trip: Mapped[Trip] = relationship("Trip", back_populates="activities")
