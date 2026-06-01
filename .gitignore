@@ -1,6 +1,8 @@
 # Bytecode and caches
 __pycache__/
+**/__pycache__/
 *.py[cod]
+**/*.py[cod]
 *$py.class
 *.so
 .Python
@@ -19,10 +21,15 @@ ENV/
 # Test and coverage output
 .pytest_cache/
 .coverage
+.coverage.*
 coverage.xml
+coverage.json
 htmlcov/
 *.cover
+*.coveragerc
 .hypothesis/
+junit.xml
+test-results/
 
 # Project output (CLI writes here by default)
 output/

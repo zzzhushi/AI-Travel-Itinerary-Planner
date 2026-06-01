@@ -4,81 +4,24 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
+
+from google.genai import types
+
+from src.agents.provider import LLMProvider
 
 logger = logging.getLogger(__name__)
 
-from google.adk.agents import Agent
-from google.adk.models.google_llm import Gemini
-from google.adk.runners import InMemoryRunner
-from google.genai import types
-
-
-@runtime_checkable
-class AgentBackend(Protocol):
-    """Future provider abstraction — implement to swap Gemini for OpenAI/Anthropic."""
-
-    async def ask(self, system_prompt: str, user_prompt: str) -> tuple[str, str]: ...
-
 
 class LlmAgent:
-    """Holds one Agent+Runner; each call gets an isolated session to avoid history bleed."""
+    """Thin base that holds an injected LLMProvider and delegates ask() to it."""
 
-    def __init__(
-        self,
-        name: str,
-        instruction: str,
-        tools: list = [],
-        retry_attempts: int = 5,
-        retry_exp_base: int = 7,
-    ) -> None:
-        if os.getenv("GOOGLE_API_KEY"):
-            os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "FALSE")
-        self._agent = Agent(
-            name=name,
-            model=Gemini(
-                model="gemini-2.5-flash",
-                retry_options=_retry_config(retry_attempts, retry_exp_base),
-            ),
-            instruction=instruction,
-            tools=tools,
-        )
-        self._runner = InMemoryRunner(agent=self._agent)
-        self._call_count = 0
+    def __init__(self, provider: LLMProvider) -> None:
+        self._provider = provider
 
     async def ask(self, prompt: str) -> tuple[str, str]:
-        """Send a prompt; returns (text, error). Each call uses a fresh session.
-
-        A unique session_id per call prevents conversation history from bleeding
-        across unrelated queries when the agent is reused as a singleton.
-        """
-        session_id = f"session_{self._call_count}"
-        self._call_count += 1
-        logger.info(
-            "[%s] call #%d prompt:\n%s",
-            self._agent.name,
-            self._call_count,
-            prompt,
-        )
-        try:
-            response = await self._runner.run_debug(prompt, session_id=session_id)
-            text = _extract_text(response)
-            return (text, "") if text else ("", "No text in agent response.")
-        except Exception as e:
-            return "", f"Agent error: {e}"
-        finally:
-            # Singletons live for the process lifetime; delete each one-shot session
-            # immediately so InMemoryRunner doesn't accumulate stale session objects.
-            try:
-                await self._runner.session_service.delete_session(
-                    app_name=self._runner.app_name,
-                    user_id="debug_user_id",
-                    session_id=session_id,
-                )
-            except Exception:
-                pass
+        return await self._provider.ask(prompt)
 
 
 def _retry_config(attempts: int = 5, exp_base: int = 7) -> types.HttpRetryOptions:

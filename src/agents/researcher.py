@@ -9,9 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from google.adk.tools import google_search
-
 from src.agents.base import LlmAgent, _extract_json, _extract_json_dict
+from src.agents.provider import LLMProvider
 
 RESEARCHER_INSTRUCTION = """You are a travel research assistant helping plan a trip itinerary.
 
@@ -82,14 +81,8 @@ def _normalize(raw: list[Any], research_hash: str) -> list[dict]:
 
 
 class ResearcherAgent(LlmAgent):
-    def __init__(self) -> None:
-        super().__init__(
-            name="ResearcherAgent",
-            instruction=RESEARCHER_INSTRUCTION,
-            tools=[google_search],
-            retry_attempts=5,
-            retry_exp_base=7,
-        )
+    def __init__(self, provider: LLMProvider) -> None:
+        super().__init__(provider)
 
     async def research(
         self,
@@ -126,7 +119,19 @@ async def research_activity(
     """
     global _researcher
     if _researcher is None:
-        _researcher = ResearcherAgent()
+        from google.adk.tools import google_search
+
+        from src.agents.provider import GeminiProvider
+
+        _researcher = ResearcherAgent(
+            GeminiProvider(
+                agent_name="ResearcherAgent",
+                instruction=RESEARCHER_INSTRUCTION,
+                tools=[google_search],
+                retry_attempts=5,
+                retry_exp_base=7,
+            )
+        )
     return await _researcher.research(destination, query, is_specific, research_hash)
 
 
@@ -143,7 +148,19 @@ async def research_activities_batch(
         return []
     global _researcher
     if _researcher is None:
-        _researcher = ResearcherAgent()
+        from google.adk.tools import google_search
+
+        from src.agents.provider import GeminiProvider
+
+        _researcher = ResearcherAgent(
+            GeminiProvider(
+                agent_name="ResearcherAgent",
+                instruction=RESEARCHER_INSTRUCTION,
+                tools=[google_search],
+                retry_attempts=5,
+                retry_exp_base=7,
+            )
+        )
     prompt = _build_batch_prompt(destination, activities)
     text, err = await _researcher.ask(prompt)
     if err:

@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from src.agents.base import LlmAgent, _extract_json
+from src.agents.provider import LLMProvider
 from src.tools.maps import haversine_km
 
 # Time slot heuristics by category
@@ -227,14 +228,8 @@ def _build_refine_prompt(day_plans: list[DayPlan], destination: str) -> str:
 
 
 class PlannerAgent(LlmAgent):
-    def __init__(self) -> None:
-        super().__init__(
-            name="PlannerAgent",
-            instruction=PLANNER_INSTRUCTION,
-            tools=[],  # add google_search, maps tool here when ready
-            retry_attempts=3,
-            retry_exp_base=5,
-        )
+    def __init__(self, provider: LLMProvider) -> None:
+        super().__init__(provider)
 
     async def refine(
         self,
@@ -266,5 +261,15 @@ async def refine_schedule_with_llm(
     """
     global _planner
     if _planner is None:
-        _planner = PlannerAgent()
+        from src.agents.provider import GeminiProvider
+
+        _planner = PlannerAgent(
+            GeminiProvider(
+                agent_name="PlannerAgent",
+                instruction=PLANNER_INSTRUCTION,
+                tools=[],
+                retry_attempts=3,
+                retry_exp_base=5,
+            )
+        )
     return await _planner.refine(day_plans, destination)

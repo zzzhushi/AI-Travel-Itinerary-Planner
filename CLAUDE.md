@@ -9,6 +9,8 @@ Multi-agent itinerary planner powered by Google Gemini (via Google ADK). Users c
 ```
 src/
   agents/
+    provider.py       # LLMProvider ABC + GeminiProvider (injectable backend)
+    base.py           # LlmAgent base class (holds a provider)
     researcher.py     # Gemini + Google Search → 4-5 real options per activity query
     planner.py        # Geo-aware day assignment + optional LLM refinement
     orchestrator.py   # Coordinates researcher + planner; idempotency logic
@@ -21,6 +23,10 @@ src/
 
 run_cli.py            # Entry point: python run_cli.py [--dry-run | --json trip.json]
 alembic/              # PostgreSQL migrations
+tests/
+  conftest.py         # SQLite in-memory session fixture
+  mocks/provider.py   # MockProvider(LLMProvider) for unit tests
+  unit/               # Unit tests (no network, no API keys required)
 web/                  # FastAPI web app (coming soon)
 ```
 
@@ -61,6 +67,12 @@ python run_cli.py --json examples/trip.json
 
 # DB migrations (requires DATABASE_URL)
 alembic upgrade head
+
+# Run all unit tests (no API keys or DATABASE_URL required)
+pytest tests/unit/
+
+# Run all tests
+pytest
 ```
 
 ## Key Design Decisions
@@ -77,6 +89,9 @@ alembic upgrade head
 - Use `Optional[str]` (not `str | None`) in SQLAlchemy `Mapped` columns — Python 3.14 compat.
 - Check `research_hash` before calling the researcher — idempotency is caller's responsibility.
 - Add new activity categories to `ACTIVITY_CATEGORIES` in `src/db/models.py` and `_CATEGORY_SLOT` in `src/agents/planner.py`.
+- New agents must accept a `LLMProvider` and follow the singleton pattern in `src/agents/provider.py`.
+- Run `pytest tests/unit/` before merging — all unit tests must pass without `GOOGLE_API_KEY` or `DATABASE_URL`.
+- When adding or changing agent behaviour, update the corresponding test in `tests/unit/test_researcher_agent.py` or `test_planner_agent.py`.
 
 ## Do Not
 
