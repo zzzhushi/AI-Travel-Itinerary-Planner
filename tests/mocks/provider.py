@@ -1,6 +1,6 @@
 """MockProvider for unit tests — returns preset responses without any network calls."""
 
-from src.agents.provider import LLMProvider
+from src.agents.providers import LLMProvider
 
 
 class MockProvider(LLMProvider):

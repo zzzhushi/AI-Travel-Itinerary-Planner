@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.agents.base import LlmAgent, _extract_json, _extract_json_dict
-from src.agents.provider import LLMProvider
+from src.agents.providers import LLMProvider
 
 RESEARCHER_INSTRUCTION = """You are a travel research assistant helping plan a trip itinerary.
 
@@ -111,7 +111,7 @@ def _get_researcher() -> ResearcherAgent:
     if _researcher is None:
         from google.adk.tools import google_search
 
-        from src.agents.provider import GeminiProvider
+        from src.agents.providers import GeminiProvider
 
         _researcher = ResearcherAgent(
             GeminiProvider(

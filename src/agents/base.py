@@ -9,7 +9,7 @@ from typing import Any
 
 from google.genai import types
 
-from src.agents.provider import LLMProvider
+from src.agents.providers import LLMProvider
 
 logger = logging.getLogger(__name__)
 

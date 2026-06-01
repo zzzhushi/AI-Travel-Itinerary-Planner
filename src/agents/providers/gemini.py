@@ -1,22 +1,14 @@
-"""LLM provider abstraction for agent backends."""
+"""Gemini provider backed by Google ADK."""
 
 from __future__ import annotations
 
 import logging
 import os
-from abc import ABC, abstractmethod
 from typing import Optional
 
+from src.agents.providers.llm_provider import LLMProvider
+
 logger = logging.getLogger(__name__)
-
-
-class LLMProvider(ABC):
-    """Abstract base class for LLM backends used by agents."""
-
-    @abstractmethod
-    async def ask(self, prompt: str) -> tuple[str, str]:
-        """Send a prompt and return (response_text, error_message). error is '' on success."""
-        ...
 
 
 class GeminiProvider(LLMProvider):

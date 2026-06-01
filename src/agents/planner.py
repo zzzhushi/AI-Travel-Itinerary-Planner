@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from src.agents.base import LlmAgent, _extract_json
-from src.agents.provider import LLMProvider
+from src.agents.providers import LLMProvider
 from src.tools.maps import haversine_km
 
 # Time slot heuristics by category
@@ -261,7 +261,7 @@ async def refine_schedule_with_llm(
     """
     global _planner
     if _planner is None:
-        from src.agents.provider import GeminiProvider
+        from src.agents.providers import GeminiProvider
 
         _planner = PlannerAgent(
             GeminiProvider(
