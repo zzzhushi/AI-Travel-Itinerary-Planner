@@ -91,6 +91,10 @@ class ResearcherAgent(LlmAgent):
         return (options, "") if options else ([], "Agent returned no valid options.")
 
 
+# Lazy singleton — constructed on first call so env vars are loaded before init.
+_researcher: ResearcherAgent | None = None
+
+
 async def research_activity(
     destination: str,
     query: str,
@@ -102,4 +106,7 @@ async def research_activity(
     Returns (options, error_message). error_message is empty on success.
     Each option dict has: name, address, location, maps_search, category, why, research_hash.
     """
-    return await ResearcherAgent().research(destination, query, is_specific, research_hash)
+    global _researcher
+    if _researcher is None:
+        _researcher = ResearcherAgent()
+    return await _researcher.research(destination, query, is_specific, research_hash)

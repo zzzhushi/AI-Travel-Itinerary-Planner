@@ -3,7 +3,8 @@
     "allow": [
       "Bash(pip install *)",
       "Bash(python -c \"from web.app import app; print\\('OK', app.title\\)\")",
-      "PowerShell(cd c:\\\\Users\\\\szhu1\\\\projects\\\\itinerary; $env:DATABASE_URL = \"postgresql+asyncpg://x:x@localhost/x\"; python -c \"from web.app import app; print\\('Import OK'\\)\" 2>&1)"
+      "PowerShell(cd c:\\\\Users\\\\szhu1\\\\projects\\\\itinerary; $env:DATABASE_URL = \"postgresql+asyncpg://x:x@localhost/x\"; python -c \"from web.app import app; print\\('Import OK'\\)\" 2>&1)",
+      "Read(//c/Users/szhu1/AppData/Roaming/Python/Python314/site-packages/google/adk/sessions/**)"
     ]
   }
 }

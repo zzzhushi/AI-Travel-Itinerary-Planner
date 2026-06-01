@@ -46,15 +46,30 @@ class LlmAgent:
         self._call_count = 0
 
     async def ask(self, prompt: str) -> tuple[str, str]:
-        """Send a prompt; returns (text, error). Each call uses a fresh session."""
+        """Send a prompt; returns (text, error). Each call uses a fresh session.
+
+        A unique session_id per call prevents conversation history from bleeding
+        across unrelated queries when the agent is reused as a singleton.
+        """
         session_id = f"session_{self._call_count}"
         self._call_count += 1
         try:
             response = await self._runner.run_debug(prompt, session_id=session_id)
+            text = _extract_text(response)
+            return (text, "") if text else ("", "No text in agent response.")
         except Exception as e:
             return "", f"Agent error: {e}"
-        text = _extract_text(response)
-        return (text, "") if text else ("", "No text in agent response.")
+        finally:
+            # Singletons live for the process lifetime; delete each one-shot session
+            # immediately so InMemoryRunner doesn't accumulate stale session objects.
+            try:
+                await self._runner.session_service.delete_session(
+                    app_name=self._runner.app_name,
+                    user_id="debug_user_id",
+                    session_id=session_id,
+                )
+            except Exception:
+                pass
 
 
 def _retry_config(attempts: int = 5, exp_base: int = 7) -> types.HttpRetryOptions:
