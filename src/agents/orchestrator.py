@@ -7,18 +7,57 @@ background tasks and state transitions.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 from typing import Optional
 
-from src.agents.researcher import research_activity, research_activities_batch
-from src.agents.planner import build_schedule, refine_schedule_with_llm, DayPlan
+from src.agents.researcher import ResearcherAgent, RESEARCHER_INSTRUCTION
+from src.agents.planner import PlannerAgent, DayPlan, PLANNER_INSTRUCTION, build_schedule
 from src.tools.maps import get_place_info, maps_search_link
 
 
 def _make_hash(trip_id: int, query: str) -> str:
     key = f"{trip_id}:{query.strip().lower()}"
     return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+# Lazy singletons — constructed on first call so env vars are loaded before init.
+_researcher: ResearcherAgent | None = None
+_planner: PlannerAgent | None = None
+
+
+def _get_researcher() -> ResearcherAgent:
+    global _researcher
+    if _researcher is None:
+        from google.adk.tools import google_search
+        from src.agents.providers import GeminiProvider
+
+        _researcher = ResearcherAgent(
+            GeminiProvider(
+                agent_name="ResearcherAgent",
+                instruction=RESEARCHER_INSTRUCTION,
+                tools=[google_search],
+                retry_attempts=5,
+                retry_exp_base=7,
+            )
+        )
+    return _researcher
+
+
+def _get_planner() -> PlannerAgent:
+    global _planner
+    if _planner is None:
+        from src.agents.providers import GeminiProvider
+
+        _planner = PlannerAgent(
+            GeminiProvider(
+                agent_name="PlannerAgent",
+                instruction=PLANNER_INSTRUCTION,
+                tools=[],
+                retry_attempts=3,
+                retry_exp_base=5,
+            )
+        )
+    return _planner
 
 
 async def research_and_enrich(
@@ -42,7 +81,7 @@ async def research_and_enrich(
     if existing_hash and existing_hash == research_hash:
         return [], ""  # Caller should use cached DB results
 
-    options, err = await research_activity(
+    options, err = await _get_researcher().research(
         destination=destination,
         query=query,
         is_specific=is_specific,
@@ -99,9 +138,10 @@ async def research_and_enrich_batch(
             "research_hash": h,
         }))
 
+    researcher = _get_researcher()
     for start in range(0, len(to_research), batch_size):
         chunk = to_research[start:start + batch_size]
-        batch_results = await research_activities_batch(destination, [a for _, a in chunk])
+        batch_results = await researcher.research_batch(destination, [a for _, a in chunk])
         for (orig_idx, _), (options, err) in zip(chunk, batch_results):
             if err:
                 results[orig_idx] = ([], err)
@@ -129,7 +169,7 @@ async def generate_schedule(
 
     llm_days: list[dict] = []
     if use_llm_refinement:
-        llm_days, err = await refine_schedule_with_llm(day_plans, destination)
+        llm_days, err = await _get_planner().refine(day_plans, destination)
         if err:
             # Non-fatal: fall back to deterministic schedule
             return day_plans, [], f"LLM refinement skipped: {err}"

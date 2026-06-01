@@ -1,4 +1,4 @@
-"""Unit tests for ResearcherAgent.research() using MockProvider.
+"""Unit tests for ResearcherAgent using MockProvider.
 
 All tests use MockProvider — no Gemini API calls, no network, no env vars needed.
 """
@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from src.agents.researcher import ResearcherAgent, _normalize, research_activities_batch
+from src.agents.researcher import ResearcherAgent, _normalize
 from tests.mocks.provider import MockProvider
 
 
@@ -107,7 +107,7 @@ class TestNormalize:
         assert result[0]["category"] == "other"
 
 
-class TestResearchActivitiesBatch:
+class TestResearchBatch:
     @pytest.mark.asyncio
     async def test_batch_happy_path(self):
         # Input: 2 activities; provider returns a JSON dict with keys "0" and "1"
@@ -116,18 +116,12 @@ class TestResearchActivitiesBatch:
             "0": [{"name": "Ramen Shop", "address": "", "location": "", "maps_search": "", "category": "food", "why": ""}],
             "1": [{"name": "Museum", "address": "", "location": "", "maps_search": "", "category": "culture", "why": ""}],
         })
-        # patch the module singleton to use our mock agent
-        import src.agents.researcher as mod
-        original = mod._researcher
-        mod._researcher = ResearcherAgent(MockProvider([batch_response]))
-        try:
-            activities = [
-                {"query": "ramen", "is_specific": False, "research_hash": "h1"},
-                {"query": "museums", "is_specific": False, "research_hash": "h2"},
-            ]
-            results = await research_activities_batch("Tokyo", activities)
-        finally:
-            mod._researcher = original
+        agent = ResearcherAgent(MockProvider([batch_response]))
+        activities = [
+            {"query": "ramen", "is_specific": False, "research_hash": "h1"},
+            {"query": "museums", "is_specific": False, "research_hash": "h2"},
+        ]
+        results = await agent.research_batch("Tokyo", activities)
 
         assert len(results) == 2
         options0, err0 = results[0]
@@ -146,17 +140,12 @@ class TestResearchActivitiesBatch:
         individual_fallback = json.dumps(
             [{"name": "Park", "address": "", "location": "", "maps_search": "", "category": "nature", "why": ""}]
         )
-        import src.agents.researcher as mod
-        original = mod._researcher
-        mod._researcher = ResearcherAgent(MockProvider([batch_missing, individual_fallback]))
-        try:
-            activities = [
-                {"query": "ramen", "is_specific": False, "research_hash": "h1"},
-                {"query": "parks", "is_specific": False, "research_hash": "h2"},
-            ]
-            results = await research_activities_batch("Tokyo", activities)
-        finally:
-            mod._researcher = original
+        agent = ResearcherAgent(MockProvider([batch_missing, individual_fallback]))
+        activities = [
+            {"query": "ramen", "is_specific": False, "research_hash": "h1"},
+            {"query": "parks", "is_specific": False, "research_hash": "h2"},
+        ]
+        results = await agent.research_batch("Tokyo", activities)
 
         assert len(results) == 2
         options0, _ = results[0]
@@ -168,5 +157,6 @@ class TestResearchActivitiesBatch:
     @pytest.mark.asyncio
     async def test_empty_activities_returns_empty(self):
         # Edge case: calling with no activities should return [] immediately
-        results = await research_activities_batch("Tokyo", [])
+        agent = ResearcherAgent(MockProvider([]))
+        results = await agent.research_batch("Tokyo", [])
         assert results == []

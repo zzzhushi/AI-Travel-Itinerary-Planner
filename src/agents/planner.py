@@ -246,30 +246,3 @@ class PlannerAgent(LlmAgent):
         return raw if isinstance(raw, list) else [], ""
 
 
-# Lazy singleton — constructed on first call so env vars are loaded before init.
-_planner: PlannerAgent | None = None
-
-
-async def refine_schedule_with_llm(
-    day_plans: list[DayPlan],
-    destination: str,
-) -> tuple[list[dict], str]:
-    """Optional LLM pass to improve ordering and add notes within each day.
-
-    Returns (refined_days, error_message).
-    Each day: {"day": int, "items": [{"option_id", "name", "time_slot", "note"}]}
-    """
-    global _planner
-    if _planner is None:
-        from src.agents.providers import GeminiProvider
-
-        _planner = PlannerAgent(
-            GeminiProvider(
-                agent_name="PlannerAgent",
-                instruction=PLANNER_INSTRUCTION,
-                tools=[],
-                retry_attempts=3,
-                retry_exp_base=5,
-            )
-        )
-    return await _planner.refine(day_plans, destination)
