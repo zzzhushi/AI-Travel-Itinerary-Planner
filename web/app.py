@@ -339,14 +339,18 @@ def research_status(request: Request, trip_id: int, session: Session = Depends(g
         return templates.TemplateResponse("trips/_research_status.html", {
             "request": request, "trip_id": trip_id, "message": "Researching activities…",
         })
-    # Done — return updated activities tab
+    # Done — return full tab wrapper so the tab bar stays visible
     trip = get_trip(session, trip_id)
     activities = get_activities(session, trip.id)
     ctx = _trip_context(session, trip)
     del _research_jobs[trip_id]
     error = job.error
-    return templates.TemplateResponse("trips/_tab_activities.html", {
-        "request": request, **ctx, "activities": activities, "research_done": True, "research_error": error,
+    tab_content = templates.get_template("trips/_tab_activities.html").render({
+        **ctx, "request": request, "activities": activities,
+        "research_done": True, "research_error": error,
+    })
+    return templates.TemplateResponse("trips/_tabs_wrapper.html", {
+        "request": request, **ctx, "active_tab": "activities", "tab_content": tab_content,
     })
 
 
@@ -417,9 +421,12 @@ def schedule_status(request: Request, trip_id: int, session: Session = Depends(g
     warn = job.result.get("warn", "") if job.result else ""
     error = job.error
     del _schedule_jobs[trip_id]
-    return templates.TemplateResponse("trips/_tab_schedule.html", {
-        "request": request, **ctx, "days": days,
+    tab_content = templates.get_template("trips/_tab_schedule.html").render({
+        **ctx, "request": request, "days": days,
         "schedule_done": True, "schedule_warn": warn, "schedule_error": error,
+    })
+    return templates.TemplateResponse("trips/_tabs_wrapper.html", {
+        "request": request, **ctx, "active_tab": "schedule", "tab_content": tab_content,
     })
 
 
