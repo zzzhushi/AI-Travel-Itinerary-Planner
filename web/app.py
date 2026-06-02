@@ -154,7 +154,7 @@ def _run_schedule_background(trip_id: int, num_days: int, use_llm: bool, job: _J
 def trip_list(request: Request, session: Session = Depends(get_db)):
     trips = get_trips(session)
     trip_contexts = [_trip_context(session, t) for t in trips]
-    return templates.TemplateResponse("trips/list.html", {
+    return templates.TemplateResponse(request, "trips/list.html", {
         "request": request,
         "trip_contexts": trip_contexts,
     })
@@ -191,7 +191,7 @@ def trip_dashboard(
     ctx["request"] = request
     ctx["active_tab"] = tab
     ctx["tab_content"] = _render_tab(request, session, trip, tab, ctx)
-    return templates.TemplateResponse("trips/dashboard.html", ctx)
+    return templates.TemplateResponse(request, "trips/dashboard.html", ctx)
 
 
 @app.get("/trips/{trip_id}/tabs/{tab}", response_class=HTMLResponse)
@@ -205,7 +205,7 @@ def trip_tab(
     if not trip:
         return RedirectResponse("/")
     ctx = _trip_context(session, trip)
-    return templates.TemplateResponse("trips/_tabs_wrapper.html", {
+    return templates.TemplateResponse(request, "trips/_tabs_wrapper.html", {
         **ctx,
         "request": request,
         "active_tab": tab,
@@ -251,7 +251,7 @@ def trip_field_edit_form(request: Request, trip_id: int, field: str, session: Se
     if not trip:
         return HTMLResponse("", status_code=404)
     value = getattr(trip, field, "") or ""
-    return templates.TemplateResponse("trips/_field_edit.html", {
+    return templates.TemplateResponse(request, "trips/_field_edit.html", {
         "request": request, "trip": trip, "field": field, "value": value,
     })
 
@@ -264,7 +264,7 @@ def trip_field_display(request: Request, trip_id: int, field: str, session: Sess
     if not trip:
         return HTMLResponse("", status_code=404)
     value = getattr(trip, field, "") or ""
-    return templates.TemplateResponse("trips/_field_display.html", {
+    return templates.TemplateResponse(request, "trips/_field_display.html", {
         "request": request, "trip": trip, "field": field, "value": value,
     })
 
@@ -291,7 +291,7 @@ async def update_trip_field(
     session.refresh(trip)
     field = next(iter(form.keys()), "name")
     value = getattr(trip, field, "") or ""
-    return templates.TemplateResponse("trips/_field_display.html", {
+    return templates.TemplateResponse(request, "trips/_field_display.html", {
         "request": request, "trip": trip, "field": field, "value": value,
     })
 
@@ -314,7 +314,7 @@ def add_activity_route(
         return HTMLResponse("", status_code=404)
     cat = category if category and category in ACTIVITY_CATEGORIES else None
     act = add_activity(session, trip_id, query.strip(), cat, is_specific)
-    return templates.TemplateResponse("trips/_activity_row.html", {
+    return templates.TemplateResponse(request, "trips/_activity_row.html", {
         "request": request, "trip": trip, "act": act, "categories": ACTIVITY_CATEGORIES,
     })
 
@@ -325,7 +325,7 @@ def edit_activity_form(request: Request, trip_id: int, act_id: int, session: Ses
     act = session.get(Activity, act_id)
     if not trip or not act or act.trip_id != trip_id:
         return HTMLResponse("", status_code=404)
-    return templates.TemplateResponse("trips/_activity_edit.html", {
+    return templates.TemplateResponse(request, "trips/_activity_edit.html", {
         "request": request, "trip": trip, "act": act, "categories": ACTIVITY_CATEGORIES,
     })
 
@@ -336,7 +336,7 @@ def get_activity_row(request: Request, trip_id: int, act_id: int, session: Sessi
     act = session.get(Activity, act_id)
     if not trip or not act or act.trip_id != trip_id:
         return HTMLResponse("", status_code=404)
-    return templates.TemplateResponse("trips/_activity_row.html", {
+    return templates.TemplateResponse(request, "trips/_activity_row.html", {
         "request": request, "trip": trip, "act": act, "categories": ACTIVITY_CATEGORIES,
     })
 
@@ -362,7 +362,7 @@ async def update_activity(
         act.is_specific = str(form["is_specific"]).lower() in ("true", "1", "on")
     session.commit()
     session.refresh(act)
-    return templates.TemplateResponse("trips/_activity_row.html", {
+    return templates.TemplateResponse(request, "trips/_activity_row.html", {
         "request": request, "trip": trip, "act": act, "categories": ACTIVITY_CATEGORIES,
     })
 
@@ -391,7 +391,7 @@ def start_research(
     # Run in a thread so it can call asyncio.run() without conflicting with FastAPI's loop
     t = threading.Thread(target=_run_research_and_enrich_background, args=(trip_id, job), daemon=True)
     t.start()
-    return templates.TemplateResponse("trips/_research_status.html", {
+    return templates.TemplateResponse(request, "trips/_research_status.html", {
         "request": request, "trip_id": trip_id, "message": "Researching activities…",
     })
 
@@ -400,7 +400,7 @@ def start_research(
 def research_status(request: Request, trip_id: int, session: Session = Depends(get_db)):
     job = _research_jobs.get(trip_id)
     if job is None or not job.done:
-        return templates.TemplateResponse("trips/_research_status.html", {
+        return templates.TemplateResponse(request, "trips/_research_status.html", {
             "request": request, "trip_id": trip_id, "message": "Researching activities…",
         })
     # Done — return full tab wrapper so the tab bar stays visible
@@ -415,7 +415,7 @@ def research_status(request: Request, trip_id: int, session: Session = Depends(g
         **ctx, "request": request, "activities": activities,
         "research_done": True, "research_error": error,
     })
-    return templates.TemplateResponse("trips/_tabs_wrapper.html", {
+    return templates.TemplateResponse(request, "trips/_tabs_wrapper.html", {
         "request": request, **ctx, "active_tab": "activities", "tab_content": tab_content,
     })
 
@@ -438,7 +438,7 @@ async def rate_option(
         return HTMLResponse("", status_code=404)
     set_rating(session, opt_id, rating if rating > 0 else None)
     session.refresh(opt)
-    return templates.TemplateResponse("trips/_star_rating.html", {
+    return templates.TemplateResponse(request, "trips/_star_rating.html", {
         "request": request, "trip_id": trip_id, "opt": opt,
     })
 
@@ -466,7 +466,7 @@ async def generate_schedule_route(
         target=_run_schedule_background, args=(trip_id, num_days, use_llm, job), daemon=True
     )
     t.start()
-    return templates.TemplateResponse("trips/_schedule_status.html", {
+    return templates.TemplateResponse(request, "trips/_schedule_status.html", {
         "request": request, "trip_id": trip_id, "message": "Generating schedule…",
     })
 
@@ -475,7 +475,7 @@ async def generate_schedule_route(
 def schedule_status(request: Request, trip_id: int, session: Session = Depends(get_db)):
     job = _schedule_jobs.get(trip_id)
     if job is None or not job.done:
-        return templates.TemplateResponse("trips/_schedule_status.html", {
+        return templates.TemplateResponse(request, "trips/_schedule_status.html", {
             "request": request, "trip_id": trip_id, "message": "Generating schedule…",
         })
     trip = get_trip(session, trip_id)
@@ -496,7 +496,7 @@ def schedule_status(request: Request, trip_id: int, session: Session = Depends(g
         **ctx, "request": request, "days": days,
         "schedule_done": True, "schedule_warn": warn, "schedule_error": error,
     })
-    return templates.TemplateResponse("trips/_tabs_wrapper.html", {
+    return templates.TemplateResponse(request, "trips/_tabs_wrapper.html", {
         "request": request, **ctx, "active_tab": "schedule", "tab_content": tab_content,
     })
 
@@ -526,6 +526,6 @@ async def update_schedule_item(
             item.day_number = int(raw)
     session.commit()
     session.refresh(item)
-    return templates.TemplateResponse("trips/_schedule_item.html", {
+    return templates.TemplateResponse(request, "trips/_schedule_item.html", {
         "request": request, "trip_id": trip_id, "item": item,
     })
