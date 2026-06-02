@@ -9,6 +9,6 @@ from src.db.database import get_sync_session_factory
 
 def get_db() -> Generator[Session, None, None]:
     """Yield a sync session; close on exit. Used as a FastAPI dependency."""
-    Session = get_sync_session_factory()
-    with Session() as session:
+    factory = get_sync_session_factory()
+    with factory() as session:
         yield session

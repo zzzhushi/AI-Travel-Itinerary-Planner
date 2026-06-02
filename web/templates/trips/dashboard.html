@@ -1,5 +1,4 @@
 {% extends "base.html" %}
-{% from "trips/_macros.html" import field_display %}
 {% block title %}{{ trip.name }}{% endblock %}
 {% block content %}
 
@@ -9,12 +8,12 @@
 
     <!-- Editable trip fields -->
     <div class="space-y-1.5">
-      <div class="text-xl font-bold">{{ field_display(trip, "name", trip.name) }}</div>
-      <div class="text-sm text-gray-500">{{ field_display(trip, "destination", trip.destination) }}</div>
+      <div class="text-xl font-bold">{% with field="name", value=trip.name %}{% include "trips/_field_display.html" %}{% endwith %}</div>
+      <div class="text-sm text-gray-500">{% with field="destination", value=trip.destination %}{% include "trips/_field_display.html" %}{% endwith %}</div>
       <div class="flex flex-wrap gap-4 text-xs text-gray-400 mt-1">
-        <span>Days: {{ field_display(trip, "num_days", trip.num_days) }}</span>
-        <span>Start: {{ field_display(trip, "start_date", trip.start_date) }}</span>
-        <span>End: {{ field_display(trip, "end_date", trip.end_date) }}</span>
+        <span>Days: {% with field="num_days", value=trip.num_days %}{% include "trips/_field_display.html" %}{% endwith %}</span>
+        <span>Start: {% with field="start_date", value=trip.start_date %}{% include "trips/_field_display.html" %}{% endwith %}</span>
+        <span>End: {% with field="end_date", value=trip.end_date %}{% include "trips/_field_display.html" %}{% endwith %}</span>
       </div>
     </div>
 

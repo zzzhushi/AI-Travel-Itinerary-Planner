@@ -54,12 +54,24 @@ _schedule_jobs: Dict[int, _Job] = {}
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _trip_context(session: Session, trip: Trip) -> dict:
-    """Compute status counts used across multiple templates."""
+def _trip_context(
+    session: Session,
+    trip: Trip,
+    *,
+    activities=None,
+    schedule=None,
+) -> dict:
+    """Compute status counts used across multiple templates.
+
+    Pass pre-fetched `activities` or `schedule` to avoid duplicate DB queries
+    when the caller has already fetched them.
+    """
+    if activities is None:
+        activities = get_activities(session, trip.id)
+    if schedule is None:
+        schedule = get_schedule(session, trip.id)
     unresearched = get_unresearched_count(session, trip.id)
     unrated = get_unrated_count(session, trip.id)
-    activities = get_activities(session, trip.id)
-    schedule = get_schedule(session, trip.id)
 
     if not activities:
         status_label = "No activities"
@@ -83,9 +95,8 @@ def _trip_context(session: Session, trip: Trip) -> dict:
     }
 
 
-def _run_research_background(trip_id: int) -> None:
+def _run_research_background(trip_id: int, job: _Job) -> None:
     """Background thread: create own session + event loop, run research."""
-    job = _research_jobs[trip_id]
     try:
         SessionFactory = get_sync_session_factory()
         with SessionFactory() as session:
@@ -98,9 +109,8 @@ def _run_research_background(trip_id: int) -> None:
         job.done = True
 
 
-def _run_schedule_background(trip_id: int, num_days: int, use_llm: bool) -> None:
+def _run_schedule_background(trip_id: int, num_days: int, use_llm: bool, job: _Job) -> None:
     """Background thread: create own session + event loop, generate schedule."""
-    job = _schedule_jobs[trip_id]
     try:
         SessionFactory = get_sync_session_factory()
         with SessionFactory() as session:
@@ -345,7 +355,7 @@ def start_research(
     job = _Job()
     _research_jobs[trip_id] = job
     # Run in a thread so it can call asyncio.run() without conflicting with FastAPI's loop
-    t = threading.Thread(target=_run_research_background, args=(trip_id,), daemon=True)
+    t = threading.Thread(target=_run_research_background, args=(trip_id, job), daemon=True)
     t.start()
     return templates.TemplateResponse("trips/_research_status.html", {
         "request": request, "trip_id": trip_id, "message": "Researching activities…",
@@ -365,7 +375,7 @@ def research_status(request: Request, trip_id: int, session: Session = Depends(g
     if not trip:
         return HTMLResponse("", status_code=410)
     activities = get_activities(session, trip.id)
-    ctx = _trip_context(session, trip)
+    ctx = _trip_context(session, trip, activities=activities)
     error = job.error
     tab_content = templates.get_template("trips/_tab_activities.html").render({
         **ctx, "request": request, "activities": activities,
@@ -419,7 +429,7 @@ async def generate_schedule_route(
     job = _Job()
     _schedule_jobs[trip_id] = job
     t = threading.Thread(
-        target=_run_schedule_background, args=(trip_id, num_days, use_llm), daemon=True
+        target=_run_schedule_background, args=(trip_id, num_days, use_llm, job), daemon=True
     )
     t.start()
     return templates.TemplateResponse("trips/_schedule_status.html", {
@@ -445,7 +455,7 @@ def schedule_status(request: Request, trip_id: int, session: Session = Depends(g
     slot_order = {"morning": 0, "afternoon": 1, "evening": 2}
     for items in days.values():
         items.sort(key=lambda x: slot_order.get(x.time_slot or "", 3))
-    ctx = _trip_context(session, trip)
+    ctx = _trip_context(session, trip, schedule=schedule)
     warn = job.result.get("warn", "") if job.result else ""
     error = job.error
     tab_content = templates.get_template("trips/_tab_schedule.html").render({

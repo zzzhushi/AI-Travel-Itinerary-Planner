@@ -102,12 +102,21 @@ pytest
 - When adding or changing agent behaviour, update the corresponding test in `tests/unit/test_researcher_agent.py` or `test_planner_agent.py`.
 - New CLI commands or web routes that involve agents or DB writes should go through `src/services/trip_service.py`.
 
+## Web routes (web/app.py)
+
+- **Always guard entity lookups.** Every call to `get_trip()` or `session.get(Model, id)` can return `None`. Return `HTMLResponse("", status_code=404)` (or redirect) immediately before accessing any attribute or rendering a template. Missing guards cause `AttributeError` crashes.
+- **Allowlist user-controlled field/path parameters** before passing them to `getattr()` or using them to select DB columns. Use `_EDITABLE_TRIP_FIELDS` as the model.
+- **Background threads must receive job objects as arguments**, not read them from the module-level dict. Reading from the dict inside the thread creates a race: a second concurrent request can overwrite the dict entry between thread spawn and dict read, causing both threads to mutate the same job. Pattern: `threading.Thread(target=fn, args=(trip_id, job))`.
+- **Avoid double-querying in route completions.** `_trip_context()` fetches `activities` and `schedule` internally. If the caller has already fetched them (e.g., in `research_status`, `schedule_status`), pass them via the keyword args `_trip_context(session, trip, activities=..., schedule=...)` to reuse the result.
+- **Field display templates are the single source of truth.** `_field_display.html` is used both by `update_trip_field` responses and by `{% include %}` in `dashboard.html`. Do not create macro duplicates — keep one template.
+
 ## Do Not
 
 - Do not add Docker — local PostgreSQL native install is the intended setup.
 - Do not call `asyncio.run()` inside FastAPI route handlers.
 - Do not put business logic in route files — use the service layer.
 - Do not use `Base.metadata.create_all()` in production — use Alembic migrations.
+- Do not shadow imported type names with local variables (e.g., `Session = factory()` shadows the `Session` ORM type). Use descriptive names like `factory`.
 
 ## Out of Scope (for now, add later)
 
