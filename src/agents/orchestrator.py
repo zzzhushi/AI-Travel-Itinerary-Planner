@@ -11,7 +11,7 @@ import hashlib
 from typing import Optional
 
 from src.agents.researcher import ResearcherAgent, RESEARCHER_INSTRUCTION
-from src.agents.planner import PlannerAgent, DayPlan, PLANNER_INSTRUCTION, build_schedule
+from src.agents.planner import PlannerAgent, DayPlan, PLANNER_INSTRUCTION, build_schedule, apply_llm_refinement
 
 
 def _make_hash(trip_id: int, query: str) -> str:
@@ -139,10 +139,16 @@ async def generate_schedule(
     day_plans = build_schedule(options, num_days=num_days, min_rating=min_rating)
 
     llm_days: list[dict] = []
+    warn = ""
     if use_llm_refinement:
         llm_days, err = await _get_planner().refine(day_plans, destination)
         if err:
-            # Non-fatal: fall back to deterministic schedule
-            return day_plans, [], f"LLM refinement skipped: {err}"
+            warn = f"LLM refinement skipped: {err}"
+        else:
+            refined = apply_llm_refinement(llm_days, day_plans)
+            if refined:
+                day_plans = refined
+            else:
+                warn = "LLM produced an unusable schedule; using deterministic fallback."
 
-    return day_plans, llm_days, ""
+    return day_plans, llm_days, warn

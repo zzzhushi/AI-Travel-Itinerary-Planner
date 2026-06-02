@@ -9,6 +9,7 @@ from src.agents.planner import (
     DayPlan,
     ScheduleItem,
     _assign_time_slots,
+    apply_llm_refinement,
     build_schedule,
 )
 
@@ -139,3 +140,93 @@ class TestAssignTimeSlots:
         day = DayPlan(day_number=1, items=[item])
         _assign_time_slots(day)
         assert day.items[0].time_slot == "morning"
+
+
+def _make_original(option_id: int, day: int = 1, slot: str = "morning",
+                   locked: bool = False) -> DayPlan:
+    """Helper: build a single-item DayPlan for apply_llm_refinement tests."""
+    item = ScheduleItem(
+        option_id=option_id, name=f"Place {option_id}", category="sightseeing",
+        latitude=None, longitude=None, user_rating=4,
+        is_locked=locked, day_number=day, time_slot=slot,
+    )
+    return DayPlan(day_number=day, items=[item])
+
+
+class TestApplyLlmRefinement:
+    def _original(self, specs):
+        """Build original day_plans from list of (option_id, day, slot, locked) tuples."""
+        from collections import defaultdict
+        buckets: dict[int, list] = defaultdict(list)
+        for opt_id, day, slot, locked in specs:
+            buckets[day].append(ScheduleItem(
+                option_id=opt_id, name=f"Place {opt_id}", category="sightseeing",
+                latitude=None, longitude=None, user_rating=4,
+                is_locked=locked, day_number=day, time_slot=slot,
+            ))
+        return [DayPlan(day_number=d, items=items) for d, items in sorted(buckets.items())]
+
+    def test_happy_path_applies_llm_ordering_and_slots(self):
+        # LLM reorders two items across two days and changes a time slot
+        original = self._original([(1, 1, "morning", False), (2, 2, "morning", False)])
+        llm_days = [
+            {"day": 1, "items": [{"option_id": 2, "name": "Place 2", "time_slot": "evening", "note": ""}]},
+            {"day": 2, "items": [{"option_id": 1, "name": "Place 1", "time_slot": "afternoon", "note": ""}]},
+        ]
+        result = apply_llm_refinement(llm_days, original)
+        assert len(result) == 2
+        day1_ids = [i.option_id for i in result[0].items]
+        day2_ids = [i.option_id for i in result[1].items]
+        assert 2 in day1_ids  # LLM moved opt 2 to day 1
+        assert 1 in day2_ids  # LLM moved opt 1 to day 2
+        assert result[0].items[0].time_slot == "evening"  # LLM slot applied
+
+    def test_dropped_item_is_added_back(self):
+        # LLM output omits one item → it must appear in the result at its original placement
+        original = self._original([(1, 1, "morning", False), (2, 1, "afternoon", False)])
+        llm_days = [
+            {"day": 1, "items": [{"option_id": 1, "name": "Place 1", "time_slot": "morning", "note": ""}]},
+            # opt 2 was dropped by LLM
+        ]
+        result = apply_llm_refinement(llm_days, original)
+        all_ids = {i.option_id for dp in result for i in dp.items}
+        assert 1 in all_ids
+        assert 2 in all_ids  # added back
+
+    def test_hallucinated_option_id_is_ignored(self):
+        # LLM adds an option_id that doesn't exist in the original → silently dropped
+        original = self._original([(1, 1, "morning", False)])
+        llm_days = [
+            {"day": 1, "items": [
+                {"option_id": 1, "name": "Place 1", "time_slot": "morning", "note": ""},
+                {"option_id": 999, "name": "Ghost", "time_slot": "morning", "note": ""},
+            ]},
+        ]
+        result = apply_llm_refinement(llm_days, original)
+        all_ids = {i.option_id for dp in result for i in dp.items}
+        assert 999 not in all_ids
+
+    def test_locked_item_keeps_original_day_and_slot(self):
+        # LLM tries to move locked item to a different day/slot → ignored, original preserved
+        original = self._original([(1, 3, "afternoon", True), (2, 1, "morning", False)])
+        llm_days = [
+            {"day": 1, "items": [
+                {"option_id": 1, "name": "Place 1", "time_slot": "morning", "note": ""},  # LLM moved locked item
+                {"option_id": 2, "name": "Place 2", "time_slot": "morning", "note": ""},
+            ]},
+        ]
+        result = apply_llm_refinement(llm_days, original)
+        locked = next(i for dp in result for i in dp.items if i.option_id == 1)
+        assert locked.day_number == 3       # original preserved
+        assert locked.time_slot == "afternoon"  # original preserved
+
+    def test_empty_llm_days_returns_empty(self):
+        # Empty LLM output → caller should fall back to deterministic
+        original = self._original([(1, 1, "morning", False)])
+        assert apply_llm_refinement([], original) == []
+
+    def test_malformed_day_dict_returns_empty(self):
+        # Day dict missing the "day" key → returns [] for deterministic fallback
+        original = self._original([(1, 1, "morning", False)])
+        llm_days = [{"items": [{"option_id": 1, "time_slot": "morning"}]}]  # no "day"
+        assert apply_llm_refinement(llm_days, original) == []
