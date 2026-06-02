@@ -48,9 +48,6 @@ python run_cli.py
 
 # Validate config without making API calls
 python run_cli.py --dry-run
-
-# Non-interactive from a JSON file
-python run_cli.py --json examples/trip.json
 ```
 
 **Web UI** (opens at `http://127.0.0.1:8000`):

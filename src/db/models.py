@@ -126,6 +126,9 @@ class Option(Base):
     maps_search: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # One-sentence rationale from the researcher
     why: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Category from the researcher (food, culture, ...) — preferred over
+    # Activity.category when scheduling; falls back to it when null.
+    category: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     # Lat/lng stored for geo-aware scheduling
     latitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     longitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)

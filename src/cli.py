@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import sys
-from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -438,97 +436,3 @@ def run_interactive(dry_run: bool = False) -> None:
     with Session() as session:
         trip = select_or_create_trip(session)
         main_menu(session, trip)
-
-
-async def run_from_json(json_path: str) -> None:
-    """Non-interactive mode: load trip config from JSON, research, plan, save output."""
-    from src.agents.orchestrator import research_batch, generate_schedule
-
-    data = json.loads(Path(json_path).read_text())
-    destination = data.get("destination", "")
-    name = data.get("name", "trip")
-    num_days = data.get("num_days", 3)
-    activities = data.get("activities", [])
-
-    if not destination or not activities:
-        console.print("[red]JSON must have 'destination' and 'activities'.[/red]")
-        return
-
-    activity_list = [
-        {
-            "query": a["query"] if isinstance(a, dict) else a,
-            "is_specific": a.get("is_specific", False) if isinstance(a, dict) else False,
-        }
-        for a in activities
-    ]
-
-    console.print(f"[bold]Researching {len(activity_list)} activities for {destination}...[/bold]")
-    batch_results = await research_batch(0, destination, activity_list)
-
-    options = []
-    counter = 0
-    for act, (opts, err) in zip(activity_list, batch_results):
-        if err:
-            console.print(f"[red]{act['query']}: {err}[/red]")
-            continue
-        for opt in opts:
-            counter += 1
-            options.append({
-                "option_id": counter,
-                "name": opt["name"],
-                "category": opt.get("category", "other"),
-                "latitude": opt.get("latitude"),
-                "longitude": opt.get("longitude"),
-                "user_rating": 4,
-                "is_locked": False,
-            })
-
-    if not options:
-        console.print("[red]No options found.[/red]")
-        return
-
-    day_plans, llm_days, warn = await generate_schedule(
-        destination=destination,
-        options=options,
-        num_days=num_days or 3,
-        use_llm_refinement=True,
-        min_rating=1,
-    )
-    if warn:
-        console.print(f"[yellow]{warn}[/yellow]")
-
-    if llm_days:
-        console.print(Panel("[bold green]AI-Refined Schedule[/bold green]"))
-        for day in llm_days:
-            console.print(f"[bold]Day {day['day']}[/bold]")
-            for item in day.get("items", []):
-                slot = item.get("time_slot", "anytime")
-                note = item.get("note", "")
-                console.print(f"  [{slot:9}] {item['name']}" + (f"  — {note}" if note else ""))
-            console.print()
-    else:
-        console.print(Panel("[bold green]Schedule[/bold green]"))
-        for dp in day_plans:
-            console.print(f"[bold]Day {dp.day_number}[/bold]")
-            for item in dp.items:
-                console.print(f"  [{item.time_slot or 'anytime':9}] {item.name}")
-            console.print()
-
-    out_path = Path(f"trip_{name.lower().replace(' ', '_')}_output.json")
-    result = {
-        "name": name,
-        "destination": destination,
-        "num_days": num_days,
-        "schedule": llm_days or [
-            {
-                "day": dp.day_number,
-                "items": [
-                    {"option_id": i.option_id, "name": i.name, "time_slot": i.time_slot}
-                    for i in dp.items
-                ],
-            }
-            for dp in day_plans
-        ],
-    }
-    out_path.write_text(json.dumps(result, indent=2, default=str))
-    console.print(f"[green]Saved to {out_path}[/green]")

@@ -25,7 +25,7 @@ src/
     trip_service.py     # Business logic shared by CLI + web: research_activities(), generate_and_save_schedule()
   cli.py                # Interactive CLI — thin I/O wrapper over services + queries
 
-run_cli.py              # Entry point: python run_cli.py [--dry-run | --json trip.json]
+run_cli.py              # Entry point: python run_cli.py [--dry-run]
 alembic/                # PostgreSQL migrations
 tests/
   conftest.py           # SQLite in-memory session fixture
@@ -38,7 +38,7 @@ web/                    # FastAPI web app (coming soon)
 
 - **Trip** — name, destination, num_days (nullable), start_date/end_date (nullable)
 - **Activity** — user's query (vague or specific), category, is_specific flag
-- **Option** — researched result: name, address, location, maps_link, lat/lng, user_rating (1–5)
+- **Option** — researched result: name, category, address, location, maps_link, lat/lng, user_rating (1–5). category comes from the researcher and is preferred over Activity.category when scheduling.
 - **ScheduledItem** — option placed on a day_number + time_slot, with is_locked flag
 - **TripPreferences** — per-trip interests list, notes (for future travel style expansion)
 
@@ -64,9 +64,6 @@ python run_cli.py
 
 # CLI — validate config without API calls
 python run_cli.py --dry-run
-
-# CLI — non-interactive from JSON
-python run_cli.py --json examples/trip.json
 
 # Web UI (FastAPI + HTMX, opens at http://127.0.0.1:8000)
 python run_web.py
