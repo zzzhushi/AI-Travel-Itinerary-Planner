@@ -1,14 +1,14 @@
 # Itinerary Planner
 
-A multi-agent travel itinerary planner powered by Google Gemini. Create trips, research activities, rate options, and generate geo-aware day-by-day schedules. CLI-first with a web UI coming soon.
+A multi-agent travel itinerary planner powered by Google Gemini. Create trips, research activities, rate options, and generate a day-by-day schedule. CLI-first with a web UI coming soon.
 
 ## How it works
 
 1. **Create a trip** — give it a destination (e.g. "Tokyo, Japan") and optionally how many days
-2. **Add activities** — vague ("ramen in Shinjuku") or specific ("Ichiran Ramen Shinjuku") 
-3. **Research** — the agent searches the web and returns 4–5 real options per activity, each with a Google Maps link
+2. **Add activities** — vague ("ramen in Shinjuku") or specific ("Ichiran Ramen Shinjuku")
+3. **Research** — the agent searches the web and returns 4–5 real options per activity
 4. **Rate** — score each option 1–5 based on how much you want to go
-5. **Schedule** — the planner clusters nearby options onto the same day and generates a day-by-day itinerary
+5. **Schedule** — the planner distributes rated options across days and generates a day-by-day itinerary, with an optional AI pass for better ordering
 
 ## Local setup
 
@@ -30,10 +30,16 @@ cp .env.example .env
 | Variable | Required | Purpose |
 |---|---|---|
 | `GOOGLE_API_KEY` | Yes | Gemini + Google Search (research agent) |
-| `GOOGLE_MAPS_API_KEY` | Optional | Geo clustering — groups nearby activities on the same day |
-| `DATABASE_URL` | Optional | PostgreSQL persistence; falls back to JSON output without it |
+| `DATABASE_URL` | Yes | PostgreSQL connection string |
 
-### 3. Run the CLI
+### 3. Database setup
+
+```bash
+createdb itinerary
+alembic upgrade head
+```
+
+### 4. Run the CLI
 
 ```bash
 # Interactive mode
@@ -46,37 +52,27 @@ python run_cli.py --dry-run
 python run_cli.py --json examples/trip.json
 ```
 
-### 4. Database setup (optional)
-
-```bash
-createdb itinerary
-alembic upgrade head
-```
-
 ## CLI walkthrough
 
 ```
 Trip name: Japan September 2026
 Destination: Tokyo, Japan
 Number of days: 5
-Seed activities: ramen, teamLab, Senso-ji temple, Shibuya crossing
+Seed activity: ramen
 
-Researching 4 activities...
+Researching 1 activity...
+  ramen → 4 options
 
-Options for: ramen
-  1. Ichiran Ramen (Shibuya)      [food]  ★ ?
-  2. Fuunji (Shinjuku)            [food]  ★ ?
+Rank Options
+  Ichiran Ramen (Shibuya)   → 5
+  Fuunji (Shinjuku)         → 4
   ...
 
-Rate each option 1–5 (0 to skip)
+Generating itinerary: 5 days, 4 options
 
-Generating schedule for 5 days...
-
-Day 1  [morning] TeamLab Borderless  [afternoon] Shibuya Crossing
-Day 2  [morning] Senso-ji Temple     [afternoon] Ichiran Ramen
+Day 1  [afternoon] Ichiran Ramen
+Day 2  [afternoon] Fuunji
 ...
-
-Save to JSON? [Y/n]
 ```
 
 ## Project structure
@@ -84,34 +80,44 @@ Save to JSON? [Y/n]
 ```
 src/
   agents/
-    researcher.py     # Gemini + Google Search → options per activity
-    planner.py        # Geo clustering + time slot assignment + LLM refinement
-    orchestrator.py   # Coordinates research + planning, handles idempotency
+    providers/          # LLMProvider ABC + GeminiProvider
+    researcher.py       # ResearcherAgent — Gemini + Google Search
+    planner.py          # PlannerAgent (LLM refinement) + build_schedule() (pure Python)
+    orchestrator.py     # Public API: research(), research_batch(), generate_schedule()
   db/
-    models.py         # SQLAlchemy ORM models
-    database.py       # Sync (CLI) and async (web) session factories
-  tools/
-    maps.py           # Google Maps geocoding + haversine distance
-  cli.py              # Interactive CLI
+    models.py           # SQLAlchemy ORM models
+    queries.py          # DB query helpers
+    database.py         # Sync + async session factories
+  services/
+    trip_service.py     # Shared business logic (CLI + web routes both use this)
+  cli.py                # Interactive CLI
 
-run_cli.py            # Entry point
-alembic/              # DB migrations
-web/                  # FastAPI + HTMX web app (coming soon)
+run_cli.py              # Entry point
+alembic/                # DB migrations
+tests/unit/             # Unit tests — no API keys or DB required
+web/                    # FastAPI + HTMX web app (coming soon)
 ```
 
 ## Key design decisions
 
 - **Idempotent research** — activities are hashed by `(trip_id, query)`; re-running won't create duplicate options
-- **Geo clustering** — the planner uses haversine distance to group nearby activities on the same day, avoiding cross-city back-and-forth; falls back to round-robin without a Maps API key
-- **Two-phase scheduling** — deterministic Python clustering first, then an optional Gemini pass for human-readable ordering and notes
+- **Injectable providers** — agents take a `LLMProvider` at construction; `MockProvider` in tests means no API keys needed to run the test suite
+- **Service layer** — `src/services/trip_service.py` holds the business logic shared between the CLI and the coming web routes
+- **Two-phase scheduling** — deterministic Python round-robin first, then an optional Gemini pass for human-readable ordering and notes
 - **Locked items** — mark a scheduled item as locked and the planner (and later the drag-drop UI) will never move it
 - **Day numbers vs dates** — the schedule uses `day_number` (1-based) until `start_date` is set on the trip
 
+## Running tests
+
+```bash
+pytest tests/unit/   # fast, no API keys or database needed
+pytest               # all tests
+```
+
 ## Coming soon
 
-- Web UI — trip dashboard, activity/options/schedule tabs, drag-drop calendar, star ratings
-- User settings page — enter API keys, stored in `.env`
-- Export to Google Doc
+- Geo clustering — group nearby activities onto the same day
+- Web UI — trip dashboard, activity/options/schedule tabs, drag-drop calendar
+- Export to Google Doc / calendar
 - Budget tracking
 - Opening hours awareness
-- Notes per activity

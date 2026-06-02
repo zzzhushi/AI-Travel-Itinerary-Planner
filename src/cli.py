@@ -86,38 +86,24 @@ def cmd_add_activities(session, trip) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_research(session, trip) -> None:
-    from src.db.queries import get_unresearched_activities, save_options, mark_researched
-    from src.agents.orchestrator import research_batch
+    from src.services.trip_service import research_activities
 
-    activities = get_unresearched_activities(session, trip.id)
-    if not activities:
+    summaries = asyncio.run(research_activities(session, trip))
+
+    if not summaries:
         console.print("[yellow]All activities have already been researched.[/yellow]")
         return
 
-    console.print(f"\n[bold]Researching {len(activities)} activit{'y' if len(activities) == 1 else 'ies'}...[/bold]")
-
-    batch_input = [
-        {
-            "query": act.query,
-            "is_specific": act.is_specific,
-        }
-        for act in activities
-    ]
-
-    results = asyncio.run(
-        research_batch(trip.id, trip.destination, batch_input)
-    )
+    console.print(f"\n[bold]Researching {len(summaries)} activit{'y' if len(summaries) == 1 else 'ies'}...[/bold]")
 
     total_saved = 0
-    for act, (options, err) in zip(activities, results):
-        if err:
-            console.print(f"  [cyan]{act.query}[/cyan] [red]error: {err}[/red]")
-            continue
-        save_options(session, act.id, options)
-        mark_researched(session, act.id)
-        total_saved += len(options)
-        count_str = f"{len(options)} option{'s' if len(options) != 1 else ''}"
-        console.print(f"  [cyan]{act.query}[/cyan] [green]→ {count_str}[/green]")
+    for s in summaries:
+        if s["error"]:
+            console.print(f"  [cyan]{s['query']}[/cyan] [red]error: {s['error']}[/red]")
+        else:
+            total_saved += s["options_saved"]
+            count_str = f"{s['options_saved']} option{'s' if s['options_saved'] != 1 else ''}"
+            console.print(f"  [cyan]{s['query']}[/cyan] [green]→ {count_str}[/green]")
 
     console.print(f"\n[green]Done. {total_saved} options saved.[/green]")
 
@@ -174,12 +160,8 @@ def cmd_rank(session, trip, rerank: bool = False) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_generate(session, trip) -> None:
-    from src.db.queries import (
-        get_rated_options_for_schedule,
-        upsert_schedule,
-        update_trip_num_days,
-    )
-    from src.agents.orchestrator import generate_schedule
+    from src.db.queries import get_rated_options_for_schedule, update_trip_num_days
+    from src.services.trip_service import generate_and_save_schedule
 
     num_days = trip.num_days
     if not num_days:
@@ -207,19 +189,12 @@ def cmd_generate(session, trip) -> None:
     use_llm = prompt("Use AI to refine schedule ordering? [Y/n]", default="y").lower() != "n"
 
     day_plans, llm_days, warn = asyncio.run(
-        generate_schedule(
-            destination=trip.destination,
-            options=options,
-            num_days=num_days,
-            use_llm_refinement=use_llm,
-            min_rating=1,
-        )
+        generate_and_save_schedule(session, trip, num_days, use_llm_refinement=use_llm)
     )
 
     if warn:
         console.print(f"[yellow]{warn}[/yellow]")
 
-    upsert_schedule(session, trip.id, day_plans)
     console.print("[green]Schedule saved.[/green]\n")
 
     if llm_days:
