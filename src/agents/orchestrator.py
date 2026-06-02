@@ -12,7 +12,6 @@ from typing import Optional
 
 from src.agents.researcher import ResearcherAgent, RESEARCHER_INSTRUCTION
 from src.agents.planner import PlannerAgent, DayPlan, PLANNER_INSTRUCTION, build_schedule
-from src.tools.maps import get_place_info, maps_search_link
 
 
 def _make_hash(trip_id: int, query: str) -> str:
@@ -60,7 +59,7 @@ def _get_planner() -> PlannerAgent:
     return _planner
 
 
-async def research_and_enrich(
+async def research(
     trip_id: int,
     destination: str,
     query: str,
@@ -68,56 +67,31 @@ async def research_and_enrich(
     existing_hash: Optional[str] = None,
 ) -> tuple[list[dict], str]:
     """
-    Research an activity and enrich results with Google Maps data.
+    Research a single activity for a destination.
 
-    Returns (options, error). Each option has all fields from researcher
-    plus: maps_link, latitude, longitude (from Maps API if available).
-
-    If existing_hash matches the computed hash, returns ([], "") to signal
-    "already researched — use cached results" (idempotency).
+    Returns (options, error). If existing_hash matches the computed hash,
+    returns ([], "") to signal "already researched — use cached results" (idempotency).
     """
     research_hash = _make_hash(trip_id, query)
 
     if existing_hash and existing_hash == research_hash:
         return [], ""  # Caller should use cached DB results
 
-    options, err = await _get_researcher().research(
+    return await _get_researcher().research(
         destination=destination,
         query=query,
         is_specific=is_specific,
         research_hash=research_hash,
     )
-    if err:
-        return [], err
-
-    return _enrich_options(options, destination), ""
 
 
-def _enrich_options(options: list[dict], destination: str) -> list[dict]:
-    enriched = []
-    for opt in options:
-        maps_query = opt.get("maps_search") or f"{opt['name']} {destination}"
-        place = get_place_info(maps_query)
-        if place:
-            opt["maps_link"] = place.maps_link
-            opt["latitude"] = place.latitude
-            opt["longitude"] = place.longitude
-            opt["address"] = opt["address"] or place.address
-        else:
-            opt["maps_link"] = maps_search_link(maps_query)
-            opt["latitude"] = None
-            opt["longitude"] = None
-        enriched.append(opt)
-    return enriched
-
-
-async def research_and_enrich_batch(
+async def research_batch(
     trip_id: int,
     destination: str,
     activities: list[dict],
     batch_size: int = 10,
 ) -> list[tuple[list[dict], str]]:
-    """Batch version of research_and_enrich. Processes activities in groups of batch_size.
+    """Research a batch of activities. Processes activities in groups of batch_size.
 
     Each activity dict needs: query. Optional: is_specific, existing_hash.
     Returns a list of (options, error) in the same order as the input.
@@ -143,10 +117,7 @@ async def research_and_enrich_batch(
         chunk = to_research[start:start + batch_size]
         batch_results = await researcher.research_batch(destination, [a for _, a in chunk])
         for (orig_idx, _), (options, err) in zip(chunk, batch_results):
-            if err:
-                results[orig_idx] = ([], err)
-            else:
-                results[orig_idx] = (_enrich_options(options, destination), "")
+            results[orig_idx] = ([], err) if err else (options, "")
 
     return results
 

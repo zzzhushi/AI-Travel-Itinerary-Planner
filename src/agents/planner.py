@@ -1,27 +1,24 @@
 """
-Planner agent: takes rated options and produces a geo-aware day-by-day schedule.
+Planner agent: takes rated options and produces a day-by-day schedule.
 
 Strategy:
 1. Filter to options with user_rating >= min_rating (default 3).
-2. If lat/lng available, cluster options by proximity so nearby places share a day.
-3. Distribute clusters evenly across num_days.
-4. Assign time slots (morning / afternoon / evening) based on category heuristics.
-5. Locked items are never moved.
+2. Distribute free items round-robin across num_days.
+3. Assign time slots (morning / afternoon / evening) based on category heuristics.
+4. Locked items are never moved.
 
 The Gemini agent is used to produce the final human-readable schedule summary
-and resolve ambiguous ordering within a day. The clustering logic is deterministic Python.
+and resolve ambiguous ordering within a day.
 """
 
 from __future__ import annotations
 
 import json
-import math
 from dataclasses import dataclass, field
 from typing import Optional
 
 from src.agents.base import LlmAgent, _extract_json
 from src.agents.providers import LLMProvider
-from src.tools.maps import haversine_km
 
 # Time slot heuristics by category
 _CATEGORY_SLOT: dict[str, str] = {
@@ -41,7 +38,6 @@ produce a clear, friendly day-by-day schedule.
 
 For each day:
 - Order activities sensibly (morning sights before evening dinner, etc.)
-- Note if activities are geographically close
 - Keep it concise: one line per activity
 
 Respond with a JSON array of days, each with:
@@ -68,60 +64,6 @@ class ScheduleItem:
 class DayPlan:
     day_number: int
     items: list[ScheduleItem] = field(default_factory=list)
-
-
-def _cluster_by_proximity(items: list[ScheduleItem], num_days: int) -> list[list[ScheduleItem]]:
-    """
-    Simple greedy clustering: group items so that nearby ones share a day.
-    Items without coordinates are distributed round-robin.
-    """
-    with_coords = [i for i in items if i.latitude and i.longitude]
-    without_coords = [i for i in items if not (i.latitude and i.longitude)]
-
-    clusters: list[list[ScheduleItem]] = [[] for _ in range(num_days)]
-
-    if not with_coords:
-        # No geo data — distribute evenly
-        for idx, item in enumerate(items):
-            clusters[idx % num_days].append(item)
-        return clusters
-
-    # Sort by rating desc so high-rated items anchor each day
-    with_coords.sort(key=lambda x: -(x.user_rating or 0))
-
-    # Greedy: assign each item to the day whose centroid is closest
-    # Seed each day with one item first
-    seeds = with_coords[:num_days]
-    remainder = with_coords[num_days:]
-    for i, seed in enumerate(seeds):
-        clusters[i].append(seed)
-
-    for item in remainder:
-        best_day = _nearest_cluster(item, clusters)
-        clusters[best_day].append(item)
-
-    # Distribute items without coords round-robin
-    days_cycle = list(range(num_days))
-    for idx, item in enumerate(without_coords):
-        clusters[days_cycle[idx % num_days]].append(item)
-
-    return clusters
-
-
-def _nearest_cluster(item: ScheduleItem, clusters: list[list[ScheduleItem]]) -> int:
-    best_day, best_dist = 0, float("inf")
-    for day_idx, cluster in enumerate(clusters):
-        if not cluster:
-            return day_idx  # Empty cluster — fill it
-        coords = [(c.latitude, c.longitude) for c in cluster if c.latitude and c.longitude]
-        if not coords:
-            continue
-        centroid_lat = sum(c[0] for c in coords) / len(coords)
-        centroid_lon = sum(c[1] for c in coords) / len(coords)
-        dist = haversine_km(item.latitude, item.longitude, centroid_lat, centroid_lon)
-        if dist < best_dist:
-            best_dist, best_day = dist, day_idx
-    return best_day
 
 
 def _assign_time_slots(day_plan: DayPlan) -> None:
@@ -188,13 +130,11 @@ def build_schedule(
             days[day] = DayPlan(day_number=day)
         days[day].items.append(item)
 
-    # Cluster free items into days
-    clusters = _cluster_by_proximity(free, num_days)
-    for day_idx, cluster in enumerate(clusters):
-        day_num = day_idx + 1
-        for item in cluster:
-            item.day_number = day_num
-            days[day_num].items.append(item)
+    # Distribute free items round-robin across days
+    for idx, item in enumerate(free):
+        day_num = (idx % num_days) + 1
+        item.day_number = day_num
+        days[day_num].items.append(item)
 
     # Assign time slots per day
     for day_plan in days.values():
@@ -244,5 +184,3 @@ class PlannerAgent(LlmAgent):
         if raw is None:
             return [], f"Could not parse planner JSON from response:\n{text[:300]}"
         return raw if isinstance(raw, list) else [], ""
-
-

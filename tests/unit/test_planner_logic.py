@@ -9,21 +9,19 @@ from src.agents.planner import (
     DayPlan,
     ScheduleItem,
     _assign_time_slots,
-    _cluster_by_proximity,
     build_schedule,
 )
 
 
 def _opt(option_id: int, name: str, rating: int = 4, category: str = "sightseeing",
-         lat: float = None, lon: float = None, locked: bool = False,
-         day_number: int = None) -> dict:
+         locked: bool = False, day_number: int = None) -> dict:
     """Helper to build an option dict for build_schedule()."""
     return {
         "option_id": option_id,
         "name": name,
         "category": category,
-        "latitude": lat,
-        "longitude": lon,
+        "latitude": None,
+        "longitude": None,
         "user_rating": rating,
         "is_locked": locked,
         "day_number": day_number,
@@ -91,6 +89,12 @@ class TestBuildSchedule:
             for item in plan.items:
                 assert item.time_slot in ("morning", "afternoon", "evening")
 
+    def test_round_robin_distribution(self):
+        # 6 items across 3 days → 2 items per day (round-robin)
+        options = [_opt(i, f"P{i}") for i in range(6)]
+        plans = build_schedule(options, num_days=3)
+        assert all(len(p.items) == 2 for p in plans)
+
 
 class TestAssignTimeSlots:
     def _make_day(self, categories: list[str]) -> DayPlan:
@@ -135,46 +139,3 @@ class TestAssignTimeSlots:
         day = DayPlan(day_number=1, items=[item])
         _assign_time_slots(day)
         assert day.items[0].time_slot == "morning"
-
-
-class TestClusterByProximity:
-    def _item(self, oid: int, lat: float = None, lon: float = None, rating: int = 4) -> ScheduleItem:
-        return ScheduleItem(option_id=oid, name=f"Item {oid}", category="sightseeing",
-                            latitude=lat, longitude=lon, user_rating=rating)
-
-    def test_round_robin_without_coords(self):
-        # Input: 4 items with no coordinates, 2 days
-        # Output: each day gets 2 items (round-robin distribution)
-        items = [self._item(i) for i in range(4)]
-        clusters = _cluster_by_proximity(items, num_days=2)
-        assert len(clusters[0]) == 2
-        assert len(clusters[1]) == 2
-
-    def test_nearby_items_cluster_together(self):
-        # Tokyo cluster (35.6, 139.7) and Seoul cluster (37.5, 126.9) — far apart
-        # With 2 days, each geographical cluster should land on a different day
-        tokyo_items = [self._item(i, lat=35.6 + i * 0.001, lon=139.7 + i * 0.001) for i in range(3)]
-        seoul_items = [self._item(i + 10, lat=37.5 + i * 0.001, lon=126.9 + i * 0.001) for i in range(3)]
-        all_items = tokyo_items + seoul_items
-        clusters = _cluster_by_proximity(all_items, num_days=2)
-        # Each cluster should be dominated by one city
-        c0_ids = {item.option_id for item in clusters[0]}
-        c1_ids = {item.option_id for item in clusters[1]}
-        tokyo_ids = {i.option_id for i in tokyo_items}
-        seoul_ids = {i.option_id for i in seoul_items}
-        # Both sets should exist and the majority of each city ends up in one cluster
-        assert len(c0_ids & tokyo_ids) + len(c1_ids & tokyo_ids) == 3
-        assert len(c0_ids & seoul_ids) + len(c1_ids & seoul_ids) == 3
-
-    def test_empty_items_returns_empty_clusters(self):
-        # Input: no items → each cluster is an empty list
-        clusters = _cluster_by_proximity([], num_days=3)
-        assert len(clusters) == 3
-        assert all(len(c) == 0 for c in clusters)
-
-    def test_single_item_goes_to_first_cluster(self):
-        # Input: 1 item, 3 days → item lands in the first cluster (seeds first day)
-        items = [self._item(1, lat=35.0, lon=139.0)]
-        clusters = _cluster_by_proximity(items, num_days=3)
-        total = sum(len(c) for c in clusters)
-        assert total == 1

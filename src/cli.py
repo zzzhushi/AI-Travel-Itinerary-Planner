@@ -87,7 +87,7 @@ def cmd_add_activities(session, trip) -> None:
 
 def cmd_research(session, trip) -> None:
     from src.db.queries import get_unresearched_activities, save_options, mark_researched
-    from src.agents.orchestrator import research_and_enrich_batch
+    from src.agents.orchestrator import research_batch
 
     activities = get_unresearched_activities(session, trip.id)
     if not activities:
@@ -105,7 +105,7 @@ def cmd_research(session, trip) -> None:
     ]
 
     results = asyncio.run(
-        research_and_enrich_batch(trip.id, trip.destination, batch_input)
+        research_batch(trip.id, trip.destination, batch_input)
     )
 
     total_saved = 0
@@ -467,7 +467,7 @@ def run_interactive(dry_run: bool = False) -> None:
 
 async def run_from_json(json_path: str) -> None:
     """Non-interactive mode: load trip config from JSON, research, plan, save output."""
-    from src.agents.orchestrator import research_and_enrich_batch, generate_schedule
+    from src.agents.orchestrator import research_batch, generate_schedule
 
     data = json.loads(Path(json_path).read_text())
     destination = data.get("destination", "")
@@ -488,7 +488,7 @@ async def run_from_json(json_path: str) -> None:
     ]
 
     console.print(f"[bold]Researching {len(activity_list)} activities for {destination}...[/bold]")
-    batch_results = await research_and_enrich_batch(0, destination, activity_list)
+    batch_results = await research_batch(0, destination, activity_list)
 
     options = []
     counter = 0
