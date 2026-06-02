@@ -58,12 +58,25 @@ def init_db_sync(engine=None) -> None:
 
 
 # --- Async (web) ---
+# These functions have no callers yet — the web app currently uses sync sessions
+# via web/deps.py. Caching is added here preemptively so connection pooling
+# works correctly when async routes are wired up.
+
+_async_engine = None
+_async_factory = None
+
 
 def get_async_engine():
-    return create_async_engine(_async_url(), echo=False)
+    global _async_engine
+    if _async_engine is None:
+        _async_engine = create_async_engine(_async_url(), echo=False)
+    return _async_engine
 
 
 def get_async_session_factory(engine=None):
-    if engine is None:
-        engine = get_async_engine()
-    return async_sessionmaker(bind=engine, expire_on_commit=False, class_=AsyncSession)
+    global _async_factory
+    if engine is not None:
+        return async_sessionmaker(bind=engine, expire_on_commit=False, class_=AsyncSession)
+    if _async_factory is None:
+        _async_factory = async_sessionmaker(bind=get_async_engine(), expire_on_commit=False, class_=AsyncSession)
+    return _async_factory
