@@ -499,7 +499,7 @@ def schedule_status(request: Request, trip_id: int, session: Session = Depends(g
             "request": request, "trip_id": trip_id, "message": "Generating schedule…",
         })
     trip = get_trip(session, trip_id)
-    del _schedule_jobs[trip_id]
+    _schedule_jobs.pop(trip_id, None)
     if not trip:
         return HTMLResponse("", status_code=410)
     schedule = get_schedule(session, trip.id)

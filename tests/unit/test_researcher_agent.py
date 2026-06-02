@@ -112,11 +112,23 @@ class TestNormalize:
         result = _normalize(raw, "")
         assert result[0]["maps_search"] == "Ichiran Ramen Shinjuku Tokyo"
 
+    def test_maps_search_missing_normalizes_to_none(self):
+        # Missing or empty maps_search must be stored as None (not "") so DB IS NULL queries work correctly
+        raw = [{"name": "Place", "maps_search": "", "why": "", "address": "", "location": "", "category": "food"}]
+        result = _normalize(raw, "")
+        assert result[0]["maps_search"] is None
+
     def test_why_passes_through(self):
         # why is preserved so it can be saved and displayed as the researcher's rationale
         raw = [{"name": "Place", "maps_search": "", "why": "Famous for its broth.", "address": "", "location": "", "category": "food"}]
         result = _normalize(raw, "")
         assert result[0]["why"] == "Famous for its broth."
+
+    def test_why_missing_normalizes_to_none(self):
+        # Missing or empty why must be stored as None
+        raw = [{"name": "Place", "maps_search": "", "why": "", "address": "", "location": "", "category": "food"}]
+        result = _normalize(raw, "")
+        assert result[0]["why"] is None
 
 
 class TestResearchBatch:
