@@ -47,7 +47,7 @@ async def research_activities(session: Session, trip: Trip) -> list[dict]:
         for act in activities
     ]
 
-    results = await research_batch(trip.id, trip.destination, batch_input)
+    results = await research_batch(trip.destination, batch_input)
 
     summaries = []
     for act, (options, err) in zip(activities, results):

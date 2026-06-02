@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from datetime import date, datetime
 from typing import Optional
 
@@ -105,12 +104,6 @@ class Activity(Base):
         "Option", back_populates="activity", cascade="all, delete-orphan"
     )
 
-    @property
-    def research_hash(self) -> str:
-        """Stable hash for idempotent research: same trip + query → same hash."""
-        key = f"{self.trip_id}:{self.query.strip().lower()}"
-        return hashlib.sha256(key.encode()).hexdigest()[:16]
-
     def __repr__(self) -> str:
         return f"<Activity id={self.id} query={self.query!r} specific={self.is_specific}>"
 
@@ -146,8 +139,6 @@ class Option(Base):
     website: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     opening_hours: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     place_refreshed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    # Hash used to detect duplicate research runs (idempotency)
-    research_hash: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     activity: Mapped[Activity] = relationship("Activity", back_populates="options")

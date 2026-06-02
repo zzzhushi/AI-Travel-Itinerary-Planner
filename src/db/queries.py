@@ -101,7 +101,6 @@ def save_options(session: Session, activity_id: int, options: list[dict]) -> lis
             why=o.get("why"),
             latitude=o.get("latitude"),
             longitude=o.get("longitude"),
-            research_hash=o.get("research_hash"),
         )
         session.add(opt)
         saved.append(opt)
