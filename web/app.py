@@ -101,6 +101,8 @@ def _run_research_background(trip_id: int, job: _Job) -> None:
         SessionFactory = get_sync_session_factory()
         with SessionFactory() as session:
             trip = session.get(Trip, trip_id)
+            if trip is None:
+                return
             summaries = asyncio.run(research_activities(session, trip))
         job.result = summaries
     except Exception as e:
@@ -115,6 +117,8 @@ def _run_schedule_background(trip_id: int, num_days: int, use_llm: bool, job: _J
         SessionFactory = get_sync_session_factory()
         with SessionFactory() as session:
             trip = session.get(Trip, trip_id)
+            if trip is None:
+                return
             day_plans, llm_days, warn = asyncio.run(
                 generate_and_save_schedule(session, trip, num_days, use_llm)
             )
@@ -231,6 +235,19 @@ def trip_field_edit_form(request: Request, trip_id: int, field: str, session: Se
         return HTMLResponse("", status_code=404)
     value = getattr(trip, field, "") or ""
     return templates.TemplateResponse("trips/_field_edit.html", {
+        "request": request, "trip": trip, "field": field, "value": value,
+    })
+
+
+@app.get("/trips/{trip_id}/fields/{field}/display", response_class=HTMLResponse)
+def trip_field_display(request: Request, trip_id: int, field: str, session: Session = Depends(get_db)):
+    if field not in _EDITABLE_TRIP_FIELDS:
+        return HTMLResponse("", status_code=404)
+    trip = get_trip(session, trip_id)
+    if not trip:
+        return HTMLResponse("", status_code=404)
+    value = getattr(trip, field, "") or ""
+    return templates.TemplateResponse("trips/_field_display.html", {
         "request": request, "trip": trip, "field": field, "value": value,
     })
 
