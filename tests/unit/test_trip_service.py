@@ -30,7 +30,6 @@ def _make_option_dict(name: str, category: str = "food") -> dict:
     return {
         "name": name, "address": "123 St", "location": "Downtown",
         "maps_search": f"{name} Tokyo", "category": category, "why": "Great",
-        "research_hash": "abc",
     }
 
 
@@ -132,7 +131,7 @@ class TestGenerateAndSaveSchedule:
         act = add_activity(session, trip.id, "things to do", "sightseeing", False)
         opts = save_options(session, act.id, [
             {"name": f"Place {i}", "address": "", "location": "", "maps_link": None,
-             "latitude": None, "longitude": None, "research_hash": f"h{i}"}
+             "latitude": None, "longitude": None}
             for i in range(n)
         ])
         for opt in opts:

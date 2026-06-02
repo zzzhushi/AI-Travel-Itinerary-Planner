@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from datetime import date, datetime
 from typing import Optional
 
@@ -105,12 +104,6 @@ class Activity(Base):
         "Option", back_populates="activity", cascade="all, delete-orphan"
     )
 
-    @property
-    def research_hash(self) -> str:
-        """Stable hash for idempotent research: same trip + query → same hash."""
-        key = f"{self.trip_id}:{self.query.strip().lower()}"
-        return hashlib.sha256(key.encode()).hexdigest()[:16]
-
     def __repr__(self) -> str:
         return f"<Activity id={self.id} query={self.query!r} specific={self.is_specific}>"
 
@@ -129,13 +122,23 @@ class Option(Base):
     address: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     location: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     maps_link: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Search string produced by the researcher for Places API lookup
+    maps_search: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # One-sentence rationale from the researcher
+    why: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Lat/lng stored for geo-aware scheduling
     latitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     longitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     # User rating 1–5 (null = unrated)
     user_rating: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    # Hash used to detect duplicate research runs (idempotency)
-    research_hash: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
+    # Fields populated by Places API enrichment (all nullable — enrichment is best-effort)
+    place_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    google_rating: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    price_level: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    phone_number: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    website: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    opening_hours: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    place_refreshed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     activity: Mapped[Activity] = relationship("Activity", back_populates="options")

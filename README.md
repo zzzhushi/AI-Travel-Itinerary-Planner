@@ -144,7 +144,6 @@ pytest               # all tests
 
 - Geo clustering — group nearby activities onto the same day
 - User and activity preferences — travel style, pace, duration hints
-- Export to Google Doc / calendar
 - Budget tracking
 - Opening hours awareness
 - Drag-drop calendar in the web UI

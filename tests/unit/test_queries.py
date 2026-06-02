@@ -31,7 +31,7 @@ def _make_activity(session, trip, query="ramen restaurants", category="food", is
 def _make_options(session, activity, n=2):
     opts = [{"name": f"Place {i}", "address": f"{i} St", "location": "Downtown",
               "maps_link": None, "latitude": 35.6 + i * 0.01, "longitude": 139.7,
-              "research_hash": f"hash{i}"} for i in range(n)]
+              } for i in range(n)]
     return save_options(session, activity.id, opts)
 
 

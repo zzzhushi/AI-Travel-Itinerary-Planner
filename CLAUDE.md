@@ -86,7 +86,7 @@ pytest
 - **Injectable providers**: Agents (`ResearcherAgent`, `PlannerAgent`) take a `LLMProvider` at construction. `GeminiProvider` is used in production; `MockProvider` (in `tests/mocks/`) is used in tests. No env vars needed for unit tests.
 - **Singleton ownership**: `orchestrator.py` owns the production singletons (`_get_researcher()`, `_get_planner()`). Agent classes themselves hold no singleton state.
 - **Service layer**: `src/services/trip_service.py` holds business logic shared between the CLI and the coming web routes. CLI functions call services; services call queries + orchestrator.
-- **Idempotent research**: `Option.research_hash` = sha256(trip_id + query)[:16]. Orchestrator skips re-research if hash matches.
+- **Idempotent research**: `Activity.researched_at` is set by `mark_researched()` after a successful run. `get_unresearched_activities()` filters on `researched_at IS NULL`, so already-researched activities are never re-sent to the LLM.
 - **Two-phase planning**: deterministic Python round-robin schedule first, then optional Gemini LLM refinement pass for human-readable ordering and notes.
 - **Locked items**: `ScheduledItem.is_locked = True` means the planner and (later) drag-drop UI will not move that item.
 - **day_number vs real dates**: Schedule uses day_number (1-based) until Trip.start_date is provided.
@@ -95,7 +95,6 @@ pytest
 
 - Ensure code comments are updated and unit tests are written for larger changes.
 - Use `Optional[str]` (not `str | None`) in SQLAlchemy `Mapped` columns — Python 3.14 compat.
-- Check `research_hash` before calling the researcher — idempotency is caller's responsibility.
 - Add new activity categories to `ACTIVITY_CATEGORIES` in `src/db/models.py` and `_CATEGORY_SLOT` in `src/agents/planner.py`.
 - New agents must accept a `LLMProvider` and follow the singleton pattern in `src/agents/orchestrator.py`.
 - Run `pytest tests/unit/` before merging — all unit tests must pass without `GOOGLE_API_KEY` or `DATABASE_URL`.

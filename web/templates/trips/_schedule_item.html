@@ -14,4 +14,9 @@
   <span class="text-xs text-gray-700 leading-tight">
     {{ item.option.name if item.option else "Unknown" }}
   </span>
+  {% if item.option and item.option.maps_link %}
+  <a href="{{ item.option.maps_link }}" target="_blank" rel="noopener"
+     title="View on Google Maps"
+     class="text-gray-300 hover:text-indigo-500 flex-shrink-0 text-xs mt-0.5">📍</a>
+  {% endif %}
 </div>

@@ -7,16 +7,9 @@ background tasks and state transitions.
 
 from __future__ import annotations
 
-import hashlib
-from typing import Optional
 
 from src.agents.researcher import ResearcherAgent, RESEARCHER_INSTRUCTION
 from src.agents.planner import PlannerAgent, DayPlan, PLANNER_INSTRUCTION, build_schedule, apply_llm_refinement
-
-
-def _make_hash(trip_id: int, query: str) -> str:
-    key = f"{trip_id}:{query.strip().lower()}"
-    return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
 # Lazy singletons — constructed on first call so env vars are loaded before init.
@@ -60,64 +53,37 @@ def _get_planner() -> PlannerAgent:
 
 
 async def research(
-    trip_id: int,
     destination: str,
     query: str,
     is_specific: bool = False,
-    existing_hash: Optional[str] = None,
 ) -> tuple[list[dict], str]:
-    """
-    Research a single activity for a destination.
-
-    Returns (options, error). If existing_hash matches the computed hash,
-    returns ([], "") to signal "already researched — use cached results" (idempotency).
-    """
-    research_hash = _make_hash(trip_id, query)
-
-    if existing_hash and existing_hash == research_hash:
-        return [], ""  # Caller should use cached DB results
-
+    """Research a single activity for a destination. Returns (options, error)."""
     return await _get_researcher().research(
         destination=destination,
         query=query,
         is_specific=is_specific,
-        research_hash=research_hash,
     )
 
 
 async def research_batch(
-    trip_id: int,
     destination: str,
     activities: list[dict],
     batch_size: int = 10,
 ) -> list[tuple[list[dict], str]]:
     """Research a batch of activities. Processes activities in groups of batch_size.
 
-    Each activity dict needs: query. Optional: is_specific, existing_hash.
+    Each activity dict needs: query. Optional: is_specific.
     Returns a list of (options, error) in the same order as the input.
     """
     if not activities:
         return []
 
-    to_research: list[tuple[int, dict]] = []
-    results: list[tuple[list[dict], str]] = [([], "")] * len(activities)
-
-    for i, act in enumerate(activities):
-        h = _make_hash(trip_id, act["query"])
-        if act.get("existing_hash") == h:
-            continue
-        to_research.append((i, {
-            "query": act["query"],
-            "is_specific": act.get("is_specific", False),
-            "research_hash": h,
-        }))
-
+    results: list[tuple[list[dict], str]] = []
     researcher = _get_researcher()
-    for start in range(0, len(to_research), batch_size):
-        chunk = to_research[start:start + batch_size]
-        batch_results = await researcher.research_batch(destination, [a for _, a in chunk])
-        for (orig_idx, _), (options, err) in zip(chunk, batch_results):
-            results[orig_idx] = ([], err) if err else (options, "")
+    for start in range(0, len(activities), batch_size):
+        chunk = activities[start:start + batch_size]
+        batch_results = await researcher.research_batch(destination, chunk)
+        results.extend(batch_results)
 
     return results
 

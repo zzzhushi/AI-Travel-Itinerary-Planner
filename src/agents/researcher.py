@@ -1,7 +1,6 @@
 """
 Researcher agent: given a destination + activity query, returns 4-5 real options.
 
-Idempotency: caller should check Option.research_hash before calling.
 Rate limiting: tenacity exponential backoff on 429/5xx.
 """
 
@@ -61,7 +60,7 @@ def _build_prompt(destination: str, query: str, is_specific: bool) -> str:
     )
 
 
-def _normalize(raw: list[Any], research_hash: str) -> list[dict]:
+def _normalize(raw: list[Any]) -> list[dict]:
     out = []
     for item in raw:
         if not isinstance(item, dict):
@@ -71,10 +70,9 @@ def _normalize(raw: list[Any], research_hash: str) -> list[dict]:
                 "name": str(item.get("name", "")).strip(),
                 "address": str(item.get("address", "")).strip(),
                 "location": str(item.get("location", "")).strip(),
-                "maps_search": str(item.get("maps_search", "")).strip(),
+                "maps_search": str(item.get("maps_search", "")).strip() or None,
                 "category": str(item.get("category", "other")).strip().lower(),
-                "why": str(item.get("why", "")).strip(),
-                "research_hash": research_hash,
+                "why": str(item.get("why", "")).strip() or None,
             }
         )
     return [o for o in out if o["name"]]
@@ -89,7 +87,6 @@ class ResearcherAgent(LlmAgent):
         destination: str,
         query: str,
         is_specific: bool = False,
-        research_hash: str = "",
     ) -> tuple[list[dict], str]:
         """Research a single activity. Returns (options, error)."""
         prompt = _build_prompt(destination, query, is_specific)
@@ -99,7 +96,7 @@ class ResearcherAgent(LlmAgent):
         raw = _extract_json(text)
         if raw is None:
             return [], f"Could not parse JSON from response:\n{text[:300]}"
-        options = _normalize(raw, research_hash)
+        options = _normalize(raw)
         return (options, "") if options else ([], "Agent returned no valid options.")
 
     async def research_batch(
@@ -109,7 +106,7 @@ class ResearcherAgent(LlmAgent):
     ) -> list[tuple[list[dict], str]]:
         """Research up to 5 activities in a single API call.
 
-        Each activity dict needs: query, is_specific (bool), research_hash (str).
+        Each activity dict needs: query, is_specific (bool).
         Returns a list of (options, error) in the same order as the input.
         """
         if not activities:
@@ -120,8 +117,14 @@ class ResearcherAgent(LlmAgent):
             return [([], err)] * len(activities)
         raw = _extract_json_dict(text)
         if raw is None:
-            error = f"Could not parse batch JSON:\n{text[:300]}"
-            return [([], error)] * len(activities)
+            # LLM sometimes returns a bare array instead of {"0": [...]} when
+            # there is only one activity in the batch. Treat it as key "0".
+            raw_array = _extract_json(text)
+            if isinstance(raw_array, list) and raw_array and len(activities) == 1:
+                raw = {"0": raw_array}
+            else:
+                error = f"Could not parse batch JSON:\n{text[:300]}"
+                return [([], error)] * len(activities)
 
         results: list[tuple[list[dict], str] | None] = [None] * len(activities)
         missing: list[int] = []
@@ -131,7 +134,7 @@ class ResearcherAgent(LlmAgent):
             if not isinstance(options_raw, list) or not options_raw:
                 missing.append(i)
                 continue
-            options = _normalize(options_raw, act.get("research_hash", ""))
+            options = _normalize(options_raw)
             results[i] = (options, "") if options else ([], f"No valid options for: {act['query']}")
 
         # Fall back to individual calls for any activities the model dropped.
@@ -141,7 +144,6 @@ class ResearcherAgent(LlmAgent):
                 destination,
                 act["query"],
                 act.get("is_specific", False),
-                act.get("research_hash", ""),
             )
             results[i] = (opts, err)
 
