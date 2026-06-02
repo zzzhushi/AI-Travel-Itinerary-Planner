@@ -176,7 +176,12 @@ def trip_tab(
 ):
     trip = get_trip(session, trip_id)
     ctx = _trip_context(session, trip)
-    return HTMLResponse(_render_tab(request, session, trip, tab, ctx))
+    return templates.TemplateResponse("trips/_tabs_wrapper.html", {
+        **ctx,
+        "request": request,
+        "active_tab": tab,
+        "tab_content": _render_tab(request, session, trip, tab, ctx),
+    })
 
 
 def _render_tab(request: Request, session: Session, trip: Trip, tab: str, ctx: dict) -> str:

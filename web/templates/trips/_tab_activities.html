@@ -4,6 +4,22 @@
 </div>
 {% endif %}
 
+{% if unresearched_count > 0 %}
+<div class="mb-4 flex items-center justify-between bg-orange-50 border border-orange-200 rounded-xl px-4 py-3">
+  <p class="text-sm text-orange-800">
+    <span class="font-medium">{{ unresearched_count }} activit{{ 'y' if unresearched_count == 1 else 'ies' }}</span>
+    pending research
+  </p>
+  <button
+    hx-post="/trips/{{ trip.id }}/research"
+    hx-target="#trip-tabs"
+    hx-swap="innerHTML"
+    class="bg-indigo-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors">
+    Research now
+  </button>
+</div>
+{% endif %}
+
 <div id="activities-list" class="space-y-2">
   {% for act in activities %}
     {% include "trips/_activity_row.html" %}

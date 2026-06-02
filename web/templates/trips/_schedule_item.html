@@ -5,9 +5,10 @@
     hx-vals='{"is_locked": "{{ "false" if item.is_locked else "true" }}"}'
     hx-target="#schedule-item-{{ item.id }}"
     hx-swap="outerHTML"
-    title="{{ 'Unlock' if item.is_locked else 'Lock' }} this item"
-    class="text-sm mt-0.5 flex-shrink-0 {% if item.is_locked %}text-indigo-500{% else %}text-gray-200 hover:text-gray-400{% endif %} transition-colors">
-    🔒
+    title="{{ 'Locked — click to unlock' if item.is_locked else 'Unlocked — click to lock' }}"
+    class="text-sm mt-0.5 flex-shrink-0 transition-colors
+      {% if item.is_locked %}text-indigo-500 hover:text-indigo-700{% else %}text-gray-300 hover:text-gray-500{% endif %}">
+    {{ '🔒' if item.is_locked else '🔓' }}
   </button>
   <!-- Name -->
   <span class="text-xs text-gray-700 leading-tight">
