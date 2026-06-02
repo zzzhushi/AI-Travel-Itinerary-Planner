@@ -37,7 +37,7 @@
           </div>
           <div class="flex items-center gap-2 flex-shrink-0">
             {% if opt.price_level is not none %}
-            <span class="text-xs text-gray-400">{{ "$" * (opt.price_level or 1) }}</span>
+            <span class="text-xs text-gray-400">{% if opt.price_level == 0 %}Free{% else %}{{ "$" * opt.price_level }}{% endif %}</span>
             {% endif %}
             {% if opt.google_rating %}
             <span class="text-xs text-gray-400 whitespace-nowrap">G: {{ "%.1f"|format(opt.google_rating) }} ★</span>

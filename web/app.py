@@ -38,7 +38,15 @@ BASE_DIR = Path(__file__).parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 import json as _json  # noqa: E402
-templates.env.filters["from_json"] = _json.loads
+
+def _safe_from_json(s: str) -> list:
+    try:
+        v = _json.loads(s)
+        return v if isinstance(v, list) else []
+    except Exception:
+        return []
+
+templates.env.filters["from_json"] = _safe_from_json
 
 # ---------------------------------------------------------------------------
 # In-memory job state (research + schedule generation per trip)
@@ -116,26 +124,28 @@ def _run_research_background(trip_id: int, job: _Job) -> None:
         with SessionFactory() as session:
             trip = session.get(Trip, trip_id)
             if trip is None:
+                job.done = True
                 return
             summaries = asyncio.run(research_activities(session, trip))
-        job.result = summaries  # research committed; record success before enrichment runs
+        job.result = summaries
     except Exception as e:
         job.error = str(e)
-        return  # research failed — skip enrichment, job.done set in finally below
-    finally:
         job.done = True
+        return  # research failed — skip enrichment
 
     # Step 2: Places enrichment — separate session, best-effort; never overwrites job.error.
     places_client = _get_places_client()
-    if not places_client:
-        return
-    try:
-        with SessionFactory() as session:
-            trip = session.get(Trip, trip_id)
-            if trip:
-                asyncio.run(enrich_options_with_places(session, trip, places_client))
-    except Exception as e:
-        _log.warning("Places enrichment failed for trip %d: %s", trip_id, e)
+    if places_client:
+        try:
+            with SessionFactory() as session:
+                trip = session.get(Trip, trip_id)
+                if trip:
+                    asyncio.run(enrich_options_with_places(session, trip, places_client))
+        except Exception as e:
+            _log.warning("Places enrichment failed for trip %d: %s", trip_id, e)
+
+    # Mark done only after enrichment completes so the UI reflects fully enriched data.
+    job.done = True
 
 
 def _run_schedule_background(trip_id: int, num_days: int, use_llm: bool, job: _Job) -> None:
@@ -415,7 +425,7 @@ def research_status(request: Request, trip_id: int, session: Session = Depends(g
         })
     # Done — return full tab wrapper so the tab bar stays visible
     trip = get_trip(session, trip_id)
-    del _research_jobs[trip_id]
+    _research_jobs.pop(trip_id, None)
     if not trip:
         return HTMLResponse("", status_code=410)
     activities = get_activities(session, trip.id)

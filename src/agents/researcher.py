@@ -71,9 +71,9 @@ def _normalize(raw: list[Any], research_hash: str) -> list[dict]:
                 "name": str(item.get("name", "")).strip(),
                 "address": str(item.get("address", "")).strip(),
                 "location": str(item.get("location", "")).strip(),
-                "maps_search": str(item.get("maps_search", "")).strip(),
+                "maps_search": str(item.get("maps_search", "")).strip() or None,
                 "category": str(item.get("category", "other")).strip().lower(),
-                "why": str(item.get("why", "")).strip(),
+                "why": str(item.get("why", "")).strip() or None,
                 "research_hash": research_hash,
             }
         )
