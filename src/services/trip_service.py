@@ -8,6 +8,11 @@ These functions are the shared core between the CLI and web routes:
 
 from __future__ import annotations
 
+import asyncio
+import logging
+from datetime import datetime, timezone
+from typing import Optional
+
 from sqlalchemy.orm import Session
 
 from src.agents.orchestrator import generate_schedule, research_batch
@@ -15,11 +20,15 @@ from src.agents.planner import DayPlan
 from src.db.models import Trip
 from src.db.queries import (
     get_rated_options_for_schedule,
+    get_unenriched_options,
     get_unresearched_activities,
     mark_researched,
     save_options,
     upsert_schedule,
 )
+from src.maps.places_client import PlacesClient
+
+logger = logging.getLogger(__name__)
 
 
 async def research_activities(session: Session, trip: Trip) -> list[dict]:
@@ -50,6 +59,63 @@ async def research_activities(session: Session, trip: Trip) -> list[dict]:
         summaries.append({"query": act.query, "options_saved": len(options), "error": ""})
 
     return summaries
+
+
+async def enrich_options_with_places(
+    session: Session,
+    trip: Trip,
+    places_client: Optional[PlacesClient] = None,
+) -> dict:
+    """Enrich unenriched Options for a trip with data from the Places API.
+
+    Picks up options where place_refreshed_at IS NULL and maps_search is set.
+    Sets place_refreshed_at on every processed option (even on lookup failure)
+    so re-runs skip already-attempted options.
+
+    Returns {"enriched": int, "skipped": int, "failed": int}.
+    """
+    if places_client is None:
+        return {"enriched": 0, "skipped": 0, "failed": 0}
+
+    options = get_unenriched_options(session, trip.id)
+    if not options:
+        return {"enriched": 0, "skipped": 0, "failed": 0}
+
+    loop = asyncio.get_event_loop()
+    lookups = await asyncio.gather(
+        *[
+            loop.run_in_executor(None, places_client.lookup, opt.maps_search or opt.name)
+            for opt in options
+        ]
+    )
+
+    enriched = skipped = failed = 0
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    for opt, result in zip(options, lookups):
+        opt.place_refreshed_at = now
+        if result is None:
+            failed += 1
+            logger.debug("Places lookup returned no result for option %d (%r)", opt.id, opt.maps_search)
+        else:
+            opt.place_id = result.get("place_id")
+            opt.latitude = result.get("latitude")
+            opt.longitude = result.get("longitude")
+            opt.maps_link = result.get("maps_link")
+            if result.get("formatted_address"):
+                opt.address = result["formatted_address"]
+            opt.google_rating = result.get("google_rating")
+            opt.price_level = result.get("price_level")
+            opt.phone_number = result.get("phone_number")
+            opt.website = result.get("website")
+            opt.opening_hours = result.get("opening_hours")
+            if result.get("place_id"):
+                enriched += 1
+            else:
+                skipped += 1
+
+    session.commit()
+    return {"enriched": enriched, "skipped": skipped, "failed": failed}
 
 
 async def generate_and_save_schedule(

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from src.db.models import Activity, Option, ScheduledItem, Trip
+
+# Google ToS allows caching place data for up to 30 days.
+PLACES_STALE_DAYS = 30
 
 
 def get_trips(session: Session) -> list[Trip]:
@@ -91,6 +95,8 @@ def save_options(session: Session, activity_id: int, options: list[dict]) -> lis
             address=o.get("address"),
             location=o.get("location"),
             maps_link=o.get("maps_link"),
+            maps_search=o.get("maps_search"),
+            why=o.get("why"),
             latitude=o.get("latitude"),
             longitude=o.get("longitude"),
             research_hash=o.get("research_hash"),
@@ -101,6 +107,35 @@ def save_options(session: Session, activity_id: int, options: list[dict]) -> lis
     for opt in saved:
         session.refresh(opt)
     return saved
+
+
+def get_unenriched_options(session: Session, trip_id: int) -> list[Option]:
+    """Return options that need Places API enrichment.
+
+    Includes options that:
+    - have never been enriched (place_refreshed_at IS NULL), or
+    - have stale data (last enriched > PLACES_STALE_DAYS ago), or
+    - previously returned no match (place_id IS NULL) and should be retried.
+
+    All options have a name, which is used as a fallback search string when
+    maps_search is NULL (i.e. options researched before that field was added).
+    """
+    stale_cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=PLACES_STALE_DAYS)
+    return (
+        session.query(Option)
+        .join(Activity)
+        .filter(
+            Activity.trip_id == trip_id,
+            Option.name.isnot(None),  # name is always set; used as fallback search string
+            or_(
+                Option.place_refreshed_at.is_(None),
+                Option.place_refreshed_at < stale_cutoff,
+                Option.place_id.is_(None),
+            ),
+        )
+        .order_by(Option.id)
+        .all()
+    )
 
 
 def get_options_for_trip(

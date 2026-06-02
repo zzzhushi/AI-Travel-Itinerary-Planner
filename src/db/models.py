@@ -129,11 +129,23 @@ class Option(Base):
     address: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     location: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     maps_link: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Search string produced by the researcher for Places API lookup
+    maps_search: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # One-sentence rationale from the researcher
+    why: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Lat/lng stored for geo-aware scheduling
     latitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     longitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     # User rating 1–5 (null = unrated)
     user_rating: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Fields populated by Places API enrichment (all nullable — enrichment is best-effort)
+    place_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    google_rating: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    price_level: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    phone_number: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    website: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    opening_hours: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    place_refreshed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     # Hash used to detect duplicate research runs (idempotency)
     research_hash: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

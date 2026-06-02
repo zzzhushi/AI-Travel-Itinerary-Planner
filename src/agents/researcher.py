@@ -120,8 +120,14 @@ class ResearcherAgent(LlmAgent):
             return [([], err)] * len(activities)
         raw = _extract_json_dict(text)
         if raw is None:
-            error = f"Could not parse batch JSON:\n{text[:300]}"
-            return [([], error)] * len(activities)
+            # LLM sometimes returns a bare array instead of {"0": [...]} when
+            # there is only one activity in the batch. Treat it as key "0".
+            raw_array = _extract_json(text)
+            if isinstance(raw_array, list) and raw_array and len(activities) == 1:
+                raw = {"0": raw_array}
+            else:
+                error = f"Could not parse batch JSON:\n{text[:300]}"
+                return [([], error)] * len(activities)
 
         results: list[tuple[list[dict], str] | None] = [None] * len(activities)
         missing: list[int] = []

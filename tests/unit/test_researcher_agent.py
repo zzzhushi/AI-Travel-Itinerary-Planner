@@ -106,6 +106,18 @@ class TestNormalize:
         result = _normalize(raw, "")
         assert result[0]["category"] == "other"
 
+    def test_maps_search_passes_through(self):
+        # maps_search is preserved so the enrichment step can use it for Places API lookup
+        raw = [{"name": "Ichiran Ramen", "maps_search": "Ichiran Ramen Shinjuku Tokyo", "why": "", "address": "", "location": "", "category": "food"}]
+        result = _normalize(raw, "")
+        assert result[0]["maps_search"] == "Ichiran Ramen Shinjuku Tokyo"
+
+    def test_why_passes_through(self):
+        # why is preserved so it can be saved and displayed as the researcher's rationale
+        raw = [{"name": "Place", "maps_search": "", "why": "Famous for its broth.", "address": "", "location": "", "category": "food"}]
+        result = _normalize(raw, "")
+        assert result[0]["why"] == "Famous for its broth."
+
 
 class TestResearchBatch:
     @pytest.mark.asyncio
@@ -153,6 +165,22 @@ class TestResearchBatch:
         assert options0[0]["name"] == "Ramen Shop"
         assert options1[0]["name"] == "Park"
         assert err1 == ""
+
+    @pytest.mark.asyncio
+    async def test_single_activity_bare_array_fallback(self):
+        # LLM sometimes returns a bare array instead of {"0": [...]} for single-activity batches.
+        # The batch parser should recover and return the results rather than erroring.
+        bare_array = json.dumps(
+            [{"name": "Gotokuji Temple", "address": "", "location": "", "maps_search": "Gotokuji Temple Tokyo", "category": "culture", "why": "Lucky cat temple."}]
+        )
+        agent = ResearcherAgent(MockProvider([bare_array]))
+        activities = [{"query": "cat shrines", "is_specific": False, "research_hash": "h1"}]
+        results = await agent.research_batch("Tokyo", activities)
+
+        assert len(results) == 1
+        options, err = results[0]
+        assert err == ""
+        assert options[0]["name"] == "Gotokuji Temple"
 
     @pytest.mark.asyncio
     async def test_empty_activities_returns_empty(self):

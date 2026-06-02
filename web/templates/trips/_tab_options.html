@@ -16,16 +16,58 @@
     </div>
     <div class="divide-y divide-gray-100">
       {% for opt in options %}
-      <div class="flex items-center gap-4 px-4 py-3">
-        <div class="flex-1 min-w-0">
-          <p class="font-medium text-gray-800 text-sm">{{ opt.name }}</p>
-          {% if opt.location or opt.address %}
-          <p class="text-xs text-gray-400 truncate">{{ opt.location or opt.address }}</p>
-          {% endif %}
+      <div class="px-4 py-3">
+        <div class="flex items-start gap-4">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2">
+              <p class="font-medium text-gray-800 text-sm">{{ opt.name }}</p>
+              {% if opt.maps_link %}
+              <a href="{{ opt.maps_link }}" target="_blank" rel="noopener"
+                 title="View on Google Maps"
+                 class="text-gray-400 hover:text-indigo-500 flex-shrink-0 text-xs">
+                📍
+              </a>
+              {% endif %}
+            </div>
+            {% if opt.why %}
+            <p class="text-xs text-gray-400 mt-0.5 leading-snug">{{ opt.why }}</p>
+            {% elif opt.location or opt.address %}
+            <p class="text-xs text-gray-400 truncate">{{ opt.location or opt.address }}</p>
+            {% endif %}
+          </div>
+          <div class="flex items-center gap-2 flex-shrink-0">
+            {% if opt.price_level is not none %}
+            <span class="text-xs text-gray-400">{{ "$" * (opt.price_level or 1) }}</span>
+            {% endif %}
+            {% if opt.google_rating %}
+            <span class="text-xs text-gray-400 whitespace-nowrap">G: {{ "%.1f"|format(opt.google_rating) }} ★</span>
+            {% endif %}
+            {% with trip_id=trip.id %}
+              {% include "trips/_star_rating.html" %}
+            {% endwith %}
+          </div>
         </div>
-        {% with trip_id=trip.id %}
-          {% include "trips/_star_rating.html" %}
-        {% endwith %}
+        {% if opt.phone_number or opt.website or opt.opening_hours %}
+        <details class="mt-2">
+          <summary class="text-xs text-indigo-500 cursor-pointer hover:text-indigo-700 select-none">More info</summary>
+          <div class="mt-1.5 text-xs text-gray-500 space-y-1 pl-1">
+            {% if opt.phone_number %}
+            <p>📞 <a href="tel:{{ opt.phone_number }}" class="hover:text-indigo-600">{{ opt.phone_number }}</a></p>
+            {% endif %}
+            {% if opt.website %}
+            <p>🌐 <a href="{{ opt.website }}" target="_blank" rel="noopener" class="hover:text-indigo-600 break-all">{{ opt.website }}</a></p>
+            {% endif %}
+            {% if opt.opening_hours %}
+            <div>
+              <p class="font-medium text-gray-600 mb-0.5">Hours</p>
+              {% for line in opt.opening_hours | from_json %}
+              <p class="leading-snug">{{ line }}</p>
+              {% endfor %}
+            </div>
+            {% endif %}
+          </div>
+        </details>
+        {% endif %}
       </div>
       {% endfor %}
     </div>
