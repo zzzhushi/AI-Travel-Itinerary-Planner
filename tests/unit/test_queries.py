@@ -240,3 +240,32 @@ class TestUpsertSchedule:
         option_ids = {si.option_id for si in schedule}
         assert opts[0].id in option_ids  # locked → preserved
         assert opts[1].id in option_ids  # newly inserted
+
+    def test_regenerate_does_not_crash_when_day_plans_include_locked_item(self, session):
+        # Regression for issue #4: build_schedule puts locked items in day_plans.
+        # upsert_schedule must not try to re-insert them (unique constraint on option_id).
+        from src.db.models import ScheduledItem
+        from src.db.queries import get_schedule
+        trip = _make_trip(session)
+        act = _make_activity(session, trip)
+        opts = _make_options(session, act, n=2)
+        # Insert a locked ScheduledItem for opts[0]
+        session.add(ScheduledItem(trip_id=trip.id, option_id=opts[0].id,
+                                   day_number=1, time_slot="morning", is_locked=True))
+        session.commit()
+        # day_plans mirrors what build_schedule produces: locked AND free items together
+        locked_item = ScheduleItem(
+            option_id=opts[0].id, name="Place 0", category="sightseeing",
+            latitude=None, longitude=None, user_rating=4,
+            is_locked=True, day_number=1, time_slot="morning",
+        )
+        free_item = ScheduleItem(
+            option_id=opts[1].id, name="Place 1", category="sightseeing",
+            latitude=None, longitude=None, user_rating=4,
+            is_locked=False, day_number=1, time_slot="afternoon",
+        )
+        plans = [DayPlan(day_number=1, items=[locked_item, free_item])]
+        upsert_schedule(session, trip.id, plans)  # must not raise IntegrityError
+        option_ids = {si.option_id for si in get_schedule(session, trip.id)}
+        assert opts[0].id in option_ids  # locked item preserved
+        assert opts[1].id in option_ids  # free item inserted
