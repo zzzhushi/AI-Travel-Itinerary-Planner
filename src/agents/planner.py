@@ -33,16 +33,18 @@ _CATEGORY_SLOT: dict[str, str] = {
     "other": "afternoon",
 }
 
-PLANNER_INSTRUCTION = """You are a travel itinerary planner. Given a list of activities grouped by day,
-produce a clear, friendly day-by-day schedule.
+PLANNER_INSTRUCTION = """You are a travel itinerary planner. Given a list of activities grouped by day, produce an optimized day-by-day schedule.
+
+Each item includes option_id, name, category, time_slot, and is_locked.
 
 For each day:
-- Order activities sensibly (morning sights before evening dinner, etc.)
-- Keep it concise: one line per activity
+- Minimize backtracking: order activities so travel flows logically by neighbourhood or direction, reducing unnecessary cross-city back-and-forth. Use your knowledge of the destination's geography.
+- Locked items (is_locked: true) are fixed anchors — do not move them to a different day or time slot. Group geographically nearby unlocked items onto the same day as a locked anchor where possible.
+- Order by time of day: sightseeing/culture/nature in the morning, food/shopping in the afternoon, nightlife in the evening — adjust when geographic flow demands it.
 
 Respond with a JSON array of days, each with:
 - "day": integer (1-based)
-- "items": array of objects with "option_id", "name", "time_slot", "note" (brief reason for ordering)
+- "items": array of objects with "option_id", "name", "time_slot", "note" (brief one-line reason for placement)
 
 Return ONLY the JSON array. No markdown, no extra text."""
 
@@ -141,6 +143,74 @@ def build_schedule(
         _assign_time_slots(day_plan)
 
     return sorted(days.values(), key=lambda d: d.day_number)
+
+
+def apply_llm_refinement(
+    llm_days: list[dict],
+    original_day_plans: list[DayPlan],
+) -> list[DayPlan]:
+    """Convert LLM JSON output back into DayPlan objects.
+
+    Returns [] if the output is malformed or empty — caller should fall back
+    to the deterministic schedule.
+
+    Guarantees:
+    - Locked items keep their original day_number and time_slot.
+    - Items the LLM dropped are re-added at their original placement.
+    - Hallucinated option_ids (not in the original) are silently ignored.
+    """
+    if not llm_days:
+        return []
+
+    originals: dict[int, ScheduleItem] = {
+        item.option_id: item
+        for dp in original_day_plans
+        for item in dp.items
+    }
+
+    seen_ids: set[int] = set()
+    result: list[DayPlan] = []
+
+    for day_dict in llm_days:
+        day_num = day_dict.get("day")
+        if not isinstance(day_num, int):
+            return []
+        dp = DayPlan(day_number=day_num)
+        for item_dict in day_dict.get("items", []):
+            opt_id = item_dict.get("option_id")
+            orig = originals.get(opt_id)
+            if orig is None or opt_id in seen_ids:
+                continue
+            seen_ids.add(opt_id)
+            if orig.is_locked:
+                dp.items.append(ScheduleItem(
+                    option_id=orig.option_id, name=orig.name,
+                    category=orig.category, latitude=orig.latitude,
+                    longitude=orig.longitude, user_rating=orig.user_rating,
+                    is_locked=True, day_number=orig.day_number,
+                    time_slot=orig.time_slot,
+                ))
+            else:
+                dp.items.append(ScheduleItem(
+                    option_id=orig.option_id, name=orig.name,
+                    category=orig.category, latitude=orig.latitude,
+                    longitude=orig.longitude, user_rating=orig.user_rating,
+                    is_locked=False, day_number=day_num,
+                    time_slot=item_dict.get("time_slot") or orig.time_slot,
+                ))
+        result.append(dp)
+
+    # Re-add items the LLM dropped at their original placement
+    for opt_id, orig in originals.items():
+        if opt_id not in seen_ids:
+            day_num = orig.day_number or 1
+            target = next((d for d in result if d.day_number == day_num), None)
+            if target is None:
+                target = DayPlan(day_number=day_num)
+                result.append(target)
+            target.items.append(orig)
+
+    return sorted(result, key=lambda d: d.day_number)
 
 
 def _build_refine_prompt(day_plans: list[DayPlan], destination: str) -> str:
