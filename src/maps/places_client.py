@@ -40,6 +40,9 @@ class PlacesClient:
 
     def __init__(self, api_key: str) -> None:
         self._api_key = api_key
+        # Persistent client so concurrent lookup() calls reuse connections
+        # from the pool rather than opening a new TCP connection each time.
+        self._http = httpx.Client(timeout=10.0)
 
     def lookup(self, maps_search: str) -> Optional[dict]:
         """Resolve a search string to a place dict, or None on no-match / error.
@@ -51,7 +54,7 @@ class PlacesClient:
         if not maps_search:
             return None
         try:
-            response = httpx.post(
+            response = self._http.post(
                 _TEXT_SEARCH_URL,
                 headers={
                     "X-Goog-Api-Key": self._api_key,
@@ -59,7 +62,6 @@ class PlacesClient:
                     "Content-Type": "application/json",
                 },
                 json={"textQuery": maps_search},
-                timeout=10.0,
             )
             response.raise_for_status()
             data = response.json()

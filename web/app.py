@@ -107,9 +107,8 @@ def _trip_context(
     }
 
 
-def _run_research_background(trip_id: int, job: _Job) -> None:
-    """Background thread: research + best-effort Places enrichment via the shared
-    service function, so the CLI and web behave identically."""
+def _run_research_and_enrich_background(trip_id: int, job: _Job) -> None:
+    """Background thread: research activities and enrich options with Places data."""
     try:
         SessionFactory = get_sync_session_factory()
         with SessionFactory() as session:
@@ -388,7 +387,7 @@ def start_research(
     job = _Job()
     _research_jobs[trip_id] = job
     # Run in a thread so it can call asyncio.run() without conflicting with FastAPI's loop
-    t = threading.Thread(target=_run_research_background, args=(trip_id, job), daemon=True)
+    t = threading.Thread(target=_run_research_and_enrich_background, args=(trip_id, job), daemon=True)
     t.start()
     return templates.TemplateResponse("trips/_research_status.html", {
         "request": request, "trip_id": trip_id, "message": "Researching activities…",

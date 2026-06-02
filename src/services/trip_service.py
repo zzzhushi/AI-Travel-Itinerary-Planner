@@ -68,10 +68,9 @@ async def research_and_enrich(
 ) -> tuple[list[dict], dict]:
     """Research unresearched activities, then best-effort enrich the new options.
 
-    Shared by the CLI and the web background job so both surfaces behave
-    identically. `research_activities` commits its results before enrichment
-    runs, and enrichment is wrapped so a Places failure never discards the
-    research output. When `places_client` is None, enrichment is skipped.
+    `research_activities` commits its results before enrichment runs, so a
+    Places failure never discards the research output. When `places_client`
+    is None, enrichment is skipped.
 
     Returns (research_summaries, enrichment_stats).
     """
