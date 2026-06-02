@@ -164,22 +164,33 @@ def get_rated_options_for_schedule(session: Session, trip_id: int) -> list[dict]
 
 
 def upsert_schedule(session: Session, trip_id: int, day_plans) -> None:
-    """Replace non-locked scheduled items with the new day plans."""
+    """Replace non-locked scheduled items atomically.
+
+    If the insert fails the delete is also rolled back, so the original
+    schedule is preserved rather than leaving only locked items behind.
+    """
     session.query(ScheduledItem).filter(
         ScheduledItem.trip_id == trip_id,
         ScheduledItem.is_locked == False,  # noqa: E712
     ).delete(synchronize_session=False)
-    session.commit()
+
+    # flush (not commit) so the delete reaches the DB within this transaction,
+    # freeing unique option_id slots before the inserts
+    session.flush()
 
     for dp in day_plans:
         for item in dp.items:
+            if item.is_locked:
+                continue  # locked items were not deleted — don't re-insert
             session.add(ScheduledItem(
                 trip_id=trip_id,
                 option_id=item.option_id,
                 day_number=item.day_number,
                 time_slot=item.time_slot,
-                is_locked=item.is_locked,
+                is_locked=False,
             ))
+
+    # single commit: if this raises, the delete is also rolled back
     session.commit()
 
 
