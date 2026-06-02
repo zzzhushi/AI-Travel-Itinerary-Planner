@@ -6,7 +6,7 @@
 
   <input name="query" value="{{ act.query }}" autofocus required
     class="flex-1 min-w-36 border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
-    onkeydown="if(event.key==='Escape')htmx.trigger(document.getElementById('activity-{{ act.id }}'),'cancel')">
+    onkeydown="if(event.key==='Escape')document.getElementById('cancel-act-{{ act.id }}').click()">
 
   <select name="category"
     class="border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">
@@ -26,6 +26,9 @@
     Save
   </button>
 
-  <a href="/trips/{{ trip.id }}"
-    class="text-gray-400 hover:text-gray-600 text-sm">Cancel</a>
+  <button type="button" id="cancel-act-{{ act.id }}"
+    hx-get="/trips/{{ trip.id }}/activities/{{ act.id }}"
+    hx-target="#activity-{{ act.id }}"
+    hx-swap="outerHTML"
+    class="text-gray-400 hover:text-gray-600 text-sm">Cancel</button>
 </form>

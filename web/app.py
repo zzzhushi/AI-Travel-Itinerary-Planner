@@ -7,9 +7,8 @@ import threading
 from pathlib import Path
 from typing import Dict, Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Form, Request
+from fastapi import Depends, FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
@@ -20,22 +19,20 @@ from src.db.queries import (
     create_trip,
     get_activities,
     get_options_for_trip,
-    get_rated_options_for_schedule,
     get_schedule,
     get_trip,
     get_trips,
     get_unrated_count,
     get_unresearched_count,
-    mark_researched,
-    save_options,
     set_rating,
-    update_trip_num_days,
     upsert_schedule,
 )
 from src.services.trip_service import generate_and_save_schedule, research_activities
 from web.deps import get_db
 
 app = FastAPI(title="Itinerary Planner")
+
+_EDITABLE_TRIP_FIELDS = {"name", "destination", "num_days", "start_date", "end_date"}
 
 BASE_DIR = Path(__file__).parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -175,6 +172,8 @@ def trip_tab(
     session: Session = Depends(get_db),
 ):
     trip = get_trip(session, trip_id)
+    if not trip:
+        return RedirectResponse("/")
     ctx = _trip_context(session, trip)
     return templates.TemplateResponse("trips/_tabs_wrapper.html", {
         **ctx,
@@ -216,7 +215,11 @@ def _render_tab(request: Request, session: Session, trip: Trip, tab: str, ctx: d
 
 @app.get("/trips/{trip_id}/fields/{field}", response_class=HTMLResponse)
 def trip_field_edit_form(request: Request, trip_id: int, field: str, session: Session = Depends(get_db)):
+    if field not in _EDITABLE_TRIP_FIELDS:
+        return HTMLResponse("", status_code=404)
     trip = get_trip(session, trip_id)
+    if not trip:
+        return HTMLResponse("", status_code=404)
     value = getattr(trip, field, "") or ""
     return templates.TemplateResponse("trips/_field_edit.html", {
         "request": request, "trip": trip, "field": field, "value": value,
@@ -231,6 +234,8 @@ async def update_trip_field(
 ):
     form = await request.form()
     trip = get_trip(session, trip_id)
+    if not trip:
+        return HTMLResponse("", status_code=404)
     for field in ("name", "destination", "num_days", "start_date", "end_date"):
         if field in form:
             raw = form[field]
@@ -273,7 +278,20 @@ def add_activity_route(
 def edit_activity_form(request: Request, trip_id: int, act_id: int, session: Session = Depends(get_db)):
     trip = get_trip(session, trip_id)
     act = session.get(Activity, act_id)
+    if not trip or not act or act.trip_id != trip_id:
+        return HTMLResponse("", status_code=404)
     return templates.TemplateResponse("trips/_activity_edit.html", {
+        "request": request, "trip": trip, "act": act, "categories": ACTIVITY_CATEGORIES,
+    })
+
+
+@app.get("/trips/{trip_id}/activities/{act_id}", response_class=HTMLResponse)
+def get_activity_row(request: Request, trip_id: int, act_id: int, session: Session = Depends(get_db)):
+    trip = get_trip(session, trip_id)
+    act = session.get(Activity, act_id)
+    if not trip or not act or act.trip_id != trip_id:
+        return HTMLResponse("", status_code=404)
+    return templates.TemplateResponse("trips/_activity_row.html", {
         "request": request, "trip": trip, "act": act, "categories": ACTIVITY_CATEGORIES,
     })
 
@@ -288,6 +306,8 @@ async def update_activity(
     form = await request.form()
     trip = get_trip(session, trip_id)
     act = session.get(Activity, act_id)
+    if not act or act.trip_id != trip_id:
+        return HTMLResponse("", status_code=404)
     if "query" in form:
         act.query = str(form["query"]).strip()
     if "category" in form:
@@ -319,7 +339,6 @@ def delete_activity(trip_id: int, act_id: int, session: Session = Depends(get_db
 def start_research(
     request: Request,
     trip_id: int,
-    background_tasks: BackgroundTasks,
     session: Session = Depends(get_db),
 ):
     job = _Job()
@@ -443,17 +462,18 @@ async def update_schedule_item(
 ):
     form = await request.form()
     item = session.get(ScheduledItem, item_id)
-    if item and item.trip_id == trip_id:
-        if "is_locked" in form:
-            item.is_locked = str(form["is_locked"]).lower() in ("true", "1", "on")
-        if "time_slot" in form:
-            item.time_slot = str(form["time_slot"])
-        if "day_number" in form:
-            raw = str(form["day_number"])
-            if raw.isdigit():
-                item.day_number = int(raw)
-        session.commit()
-        session.refresh(item)
+    if not item or item.trip_id != trip_id:
+        return HTMLResponse("", status_code=404)
+    if "is_locked" in form:
+        item.is_locked = str(form["is_locked"]).lower() in ("true", "1", "on")
+    if "time_slot" in form:
+        item.time_slot = str(form["time_slot"])
+    if "day_number" in form:
+        raw = str(form["day_number"])
+        if raw.isdigit():
+            item.day_number = int(raw)
+    session.commit()
+    session.refresh(item)
     return templates.TemplateResponse("trips/_schedule_item.html", {
         "request": request, "trip_id": trip_id, "item": item,
     })
