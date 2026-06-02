@@ -26,8 +26,8 @@ from src.db.queries import (
     get_unresearched_count,
     set_rating,
 )
-from src.maps.places_client import PlacesClient
-from src.services.trip_service import enrich_options_with_places, generate_and_save_schedule, research_activities
+from src.maps.places_client import places_client_from_env
+from src.services.trip_service import generate_and_save_schedule, research_and_enrich
 from web.deps import get_db
 
 app = FastAPI(title="Itinerary Planner")
@@ -107,18 +107,9 @@ def _trip_context(
     }
 
 
-def _get_places_client() -> Optional[PlacesClient]:
-    import os
-    key = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
-    return PlacesClient(key) if key else None
-
-
 def _run_research_background(trip_id: int, job: _Job) -> None:
-    """Background thread: research in one session, enrichment in a separate session."""
-    import logging
-    _log = logging.getLogger(__name__)
-
-    # Step 1: LLM research — owns its own session so failures don't bleed into enrichment.
+    """Background thread: research + best-effort Places enrichment via the shared
+    service function, so the CLI and web behave identically."""
     try:
         SessionFactory = get_sync_session_factory()
         with SessionFactory() as session:
@@ -126,26 +117,14 @@ def _run_research_background(trip_id: int, job: _Job) -> None:
             if trip is None:
                 job.done = True
                 return
-            summaries = asyncio.run(research_activities(session, trip))
+            summaries, _stats = asyncio.run(
+                research_and_enrich(session, trip, places_client_from_env())
+            )
         job.result = summaries
     except Exception as e:
         job.error = str(e)
+    finally:
         job.done = True
-        return  # research failed — skip enrichment
-
-    # Step 2: Places enrichment — separate session, best-effort; never overwrites job.error.
-    places_client = _get_places_client()
-    if places_client:
-        try:
-            with SessionFactory() as session:
-                trip = session.get(Trip, trip_id)
-                if trip:
-                    asyncio.run(enrich_options_with_places(session, trip, places_client))
-        except Exception as e:
-            _log.warning("Places enrichment failed for trip %d: %s", trip_id, e)
-
-    # Mark done only after enrichment completes so the UI reflects fully enriched data.
-    job.done = True
 
 
 def _run_schedule_background(trip_id: int, num_days: int, use_llm: bool, job: _Job) -> None:

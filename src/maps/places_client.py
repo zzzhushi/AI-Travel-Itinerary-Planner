@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Optional
 
 import httpx
@@ -73,6 +74,16 @@ class PlacesClient:
 
         place = places[0]
         return _parse_place(place)
+
+
+def places_client_from_env() -> Optional[PlacesClient]:
+    """Build a PlacesClient from GOOGLE_MAPS_API_KEY, or None if it is unset.
+
+    Shared by the CLI and the web app so both decide on enrichment the same way:
+    enrichment runs only when a Maps key is configured.
+    """
+    key = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
+    return PlacesClient(key) if key else None
 
 
 def _parse_place(place: dict) -> dict:

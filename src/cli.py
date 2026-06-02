@@ -84,9 +84,12 @@ def cmd_add_activities(session, trip) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_research(session, trip) -> None:
-    from src.services.trip_service import research_activities
+    from src.maps.places_client import places_client_from_env
+    from src.services.trip_service import research_and_enrich
 
-    summaries = asyncio.run(research_activities(session, trip))
+    summaries, stats = asyncio.run(
+        research_and_enrich(session, trip, places_client_from_env())
+    )
 
     if not summaries:
         console.print("[yellow]All activities have already been researched.[/yellow]")
@@ -104,6 +107,11 @@ def cmd_research(session, trip) -> None:
             console.print(f"  [cyan]{s['query']}[/cyan] [green]→ {count_str}[/green]")
 
     console.print(f"\n[green]Done. {total_saved} options saved.[/green]")
+    if stats["enriched"] or stats["failed"]:
+        console.print(
+            f"[dim]Places enrichment: {stats['enriched']} enriched, "
+            f"{stats['failed']} not found.[/dim]"
+        )
 
 
 # ---------------------------------------------------------------------------
