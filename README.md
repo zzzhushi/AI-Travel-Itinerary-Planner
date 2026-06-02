@@ -1,6 +1,6 @@
 # Itinerary Planner
 
-A multi-agent travel itinerary planner powered by Google Gemini. Create trips, research activities, rate options, and generate a day-by-day schedule. CLI-first with a web UI coming soon.
+A multi-agent travel itinerary planner powered by Google Gemini. Create trips, research activities, rate options, and generate a day-by-day schedule. Available as both a CLI and a web UI (FastAPI + HTMX).
 
 ## How it works
 
@@ -39,8 +39,9 @@ createdb itinerary
 alembic upgrade head
 ```
 
-### 4. Run the CLI
+### 4. Run the app
 
+**CLI:**
 ```bash
 # Interactive mode
 python run_cli.py
@@ -51,6 +52,27 @@ python run_cli.py --dry-run
 # Non-interactive from a JSON file
 python run_cli.py --json examples/trip.json
 ```
+
+**Web UI** (opens at `http://127.0.0.1:8000`):
+```bash
+python run_web.py
+```
+
+## Web UI walkthrough
+
+Open `http://127.0.0.1:8000` in your browser.
+
+**Trip list** — shows all trips with their status (No activities / Ready to research / Ready to rate / Ready to schedule / Scheduled). Use the form at the top to create a new trip.
+
+**Trip dashboard** — click any trip to open its dashboard. Fields (name, destination, days, dates) are inline-editable — click a value to edit it in place.
+
+The dashboard has three tabs:
+
+| Tab | What you can do |
+|---|---|
+| **Activities** | Add activities by typing a query (e.g. "ramen in Shinjuku"). Set a category and mark it as specific if you want a particular place. Edit or delete existing activities. Click **Research** to fetch 4–5 real options per activity via Gemini + Google Search. |
+| **Options** | Review the researched options grouped by activity. Rate each option 1–5 stars — only options rated ≥ 3 are included in the schedule. |
+| **Schedule** | Click **Generate schedule** to distribute rated options across days. Toggle **Use AI** to enable the Gemini refinement pass (better geographic ordering + notes). Each scheduled item shows its day, time slot, and an optional AI note. You can lock an item (padlock icon) to pin it in place, or edit its time slot and day number inline. |
 
 ## CLI walkthrough
 
@@ -92,10 +114,14 @@ src/
     trip_service.py     # Shared business logic (CLI + web routes both use this)
   cli.py                # Interactive CLI
 
-run_cli.py              # Entry point
+run_cli.py              # CLI entry point
+run_web.py              # Web entry point (uvicorn)
 alembic/                # DB migrations
 tests/unit/             # Unit tests — no API keys or DB required
-web/                    # FastAPI + HTMX web app (coming soon)
+web/
+  app.py                # FastAPI routes (trip CRUD, research, schedule, rating)
+  deps.py               # DB session dependency
+  templates/trips/      # Jinja2 + HTMX templates (list, dashboard, tab partials)
 ```
 
 ## Key design decisions
@@ -117,7 +143,8 @@ pytest               # all tests
 ## Coming soon
 
 - Geo clustering — group nearby activities onto the same day
-- Web UI — trip dashboard, activity/options/schedule tabs, drag-drop calendar
+- User and activity preferences — travel style, pace, duration hints
 - Export to Google Doc / calendar
 - Budget tracking
 - Opening hours awareness
+- Drag-drop calendar in the web UI
