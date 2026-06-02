@@ -81,6 +81,9 @@ async def enrich_options_with_places(
     if not options:
         return {"enriched": 0, "skipped": 0, "failed": 0}
 
+    # PlacesClient.lookup is a synchronous blocking HTTP call. run_in_executor moves each
+    # call to a thread pool so they don't block the event loop, and asyncio.gather fires
+    # all of them concurrently instead of waiting for each one serially.
     loop = asyncio.get_event_loop()
     lookups = await asyncio.gather(
         *[
