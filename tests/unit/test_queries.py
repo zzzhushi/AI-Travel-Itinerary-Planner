@@ -130,6 +130,14 @@ class TestSaveOptions:
         opts = save_options(session, act.id, [])
         assert opts == []
 
+    def test_persists_option_category(self, session):
+        # The researcher's per-option category is stored on the Option
+        trip = _make_trip(session)
+        act = _make_activity(session, trip, category=None)
+        [opt] = save_options(session, act.id, [{"name": "Ichiran", "category": "food"}])
+        session.refresh(opt)
+        assert opt.category == "food"
+
 
 class TestSetRating:
     def test_updates_user_rating(self, session):
@@ -176,6 +184,25 @@ class TestGetRatedOptionsForSchedule:
         for key in ("option_id", "name", "category", "latitude", "longitude",
                     "user_rating", "is_locked", "day_number", "time_slot"):
             assert key in row, f"Missing key: {key}"
+
+    def test_prefers_option_category_over_activity_category(self, session):
+        # When the option carries its own category, it wins over the activity's
+        # (broad) category so the scheduler picks a better time slot.
+        trip = _make_trip(session)
+        act = _make_activity(session, trip, category="other")
+        [opt] = save_options(session, act.id, [{"name": "Bar X", "category": "nightlife"}])
+        set_rating(session, opt.id, 4)
+        result = get_rated_options_for_schedule(session, trip.id)
+        assert result[0]["category"] == "nightlife"
+
+    def test_falls_back_to_activity_category_when_option_has_none(self, session):
+        # Option without a category falls back to the activity's category.
+        trip = _make_trip(session)
+        act = _make_activity(session, trip, category="culture")
+        [opt] = save_options(session, act.id, [{"name": "Museum"}])  # no category
+        set_rating(session, opt.id, 4)
+        result = get_rated_options_for_schedule(session, trip.id)
+        assert result[0]["category"] == "culture"
 
 
 class TestUpsertSchedule:

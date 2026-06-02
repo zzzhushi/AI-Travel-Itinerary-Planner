@@ -99,6 +99,7 @@ def save_options(session: Session, activity_id: int, options: list[dict]) -> lis
             maps_link=o.get("maps_link"),
             maps_search=o.get("maps_search"),
             why=o.get("why"),
+            category=o.get("category"),
             latitude=o.get("latitude"),
             longitude=o.get("longitude"),
         )
@@ -191,7 +192,10 @@ def get_rated_options_for_schedule(session: Session, trip_id: int) -> list[dict]
         result.append({
             "option_id": opt.id,
             "name": opt.name,
-            "category": act.category or "other",
+            # Prefer the researcher's per-option category; fall back to the
+            # activity's category, then "other". The activity category is often
+            # blank or broad, so the option category yields better time slots.
+            "category": opt.category or act.category or "other",
             "latitude": opt.latitude,
             "longitude": opt.longitude,
             "user_rating": opt.user_rating,
