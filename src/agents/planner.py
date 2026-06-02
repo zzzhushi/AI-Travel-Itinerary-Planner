@@ -40,7 +40,7 @@ Each item includes option_id, name, category, time_slot, and is_locked.
 For each day:
 - Minimize backtracking: order activities so travel flows logically by neighbourhood or direction, reducing unnecessary cross-city back-and-forth. Use your knowledge of the destination's geography.
 - Locked items (is_locked: true) are fixed anchors — do not move them to a different day or time slot. Group geographically nearby unlocked items onto the same day as a locked anchor where possible.
-- Order by time of day: sightseeing/culture/nature in the morning, food/shopping in the afternoon, nightlife in the evening — adjust when geographic flow demands it.
+- Order by time of day: sightseeing/culture/nature in the morning, food/shopping in the afternoon, food/nightlife in the evening — adjust when geographic flow demands it.
 
 Respond with a JSON array of days, each with:
 - "day": integer (1-based)
