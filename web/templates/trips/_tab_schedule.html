@@ -1,0 +1,44 @@
+{% if schedule_done is defined and schedule_done %}
+  {% if schedule_error %}
+  <div class="mb-4 p-3 rounded-lg bg-red-50 text-red-700 text-sm">Schedule error: {{ schedule_error }}</div>
+  {% elif schedule_warn %}
+  <div class="mb-4 p-3 rounded-lg bg-yellow-50 text-yellow-700 text-sm">{{ schedule_warn }}</div>
+  {% else %}
+  <div class="mb-4 p-3 rounded-lg bg-green-50 text-green-700 text-sm">Schedule generated.</div>
+  {% endif %}
+{% endif %}
+
+{% if not days %}
+<div class="text-center py-12 text-gray-400">
+  <p class="text-lg mb-1">No schedule yet</p>
+  <p class="text-sm">Rate your options and click "Generate schedule" above.</p>
+</div>
+{% else %}
+
+<div class="flex gap-4 overflow-x-auto pb-2">
+  {% for day_num in days | sort %}
+  {% set items = days[day_num] %}
+  <div class="flex-shrink-0 w-56 bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+    <div class="bg-indigo-600 text-white text-sm font-semibold px-4 py-2">Day {{ day_num }}</div>
+    <div class="divide-y divide-gray-100">
+      {% for slot in ["morning", "afternoon", "evening"] %}
+      {% set slot_items = items | selectattr("time_slot", "equalto", slot) | list %}
+      <div class="px-3 py-2">
+        <p class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-1">{{ slot }}</p>
+        {% if slot_items %}
+          {% for item in slot_items %}
+          {% with trip_id=trip.id %}
+            {% include "trips/_schedule_item.html" %}
+          {% endwith %}
+          {% endfor %}
+        {% else %}
+          <p class="text-xs text-gray-200 italic">—</p>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{% endif %}

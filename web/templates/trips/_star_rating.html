@@ -1,0 +1,18 @@
+<div id="rating-{{ opt.id }}" class="flex items-center gap-0.5">
+  {% for i in range(1, 6) %}
+  <button
+    hx-post="/trips/{{ trip_id }}/options/{{ opt.id }}/rate"
+    hx-vals='{"rating": {{ i }}}'
+    hx-target="#rating-{{ opt.id }}"
+    hx-swap="outerHTML"
+    title="{{ i }} star{{ 's' if i != 1 else '' }}"
+    class="text-xl leading-none transition-colors
+      {% if opt.user_rating is not none and opt.user_rating >= i %}text-yellow-400 hover:text-yellow-500
+      {% else %}text-gray-200 hover:text-yellow-300{% endif %}">
+    ★
+  </button>
+  {% endfor %}
+  {% if opt.user_rating %}
+  <span class="ml-1 text-xs text-gray-400">{{ opt.user_rating }}</span>
+  {% endif %}
+</div>

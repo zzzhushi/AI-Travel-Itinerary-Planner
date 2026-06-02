@@ -1,0 +1,36 @@
+{% if not activity_options %}
+<div class="text-center py-12 text-gray-400">
+  <p class="text-lg mb-1">No options yet</p>
+  <p class="text-sm">Research your activities first to see options here.</p>
+</div>
+{% else %}
+
+<div class="space-y-6">
+  {% for act, options in activity_options %}
+  <div class="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
+    <div class="px-4 py-3 bg-gray-50 border-b border-gray-100 flex items-center justify-between">
+      <h3 class="font-semibold text-gray-700">{{ act.query }}</h3>
+      {% if act.category %}
+      <span class="text-xs px-2 py-0.5 rounded-full bg-gray-200 text-gray-500">{{ act.category }}</span>
+      {% endif %}
+    </div>
+    <div class="divide-y divide-gray-100">
+      {% for opt in options %}
+      <div class="flex items-center gap-4 px-4 py-3">
+        <div class="flex-1 min-w-0">
+          <p class="font-medium text-gray-800 text-sm">{{ opt.name }}</p>
+          {% if opt.location or opt.address %}
+          <p class="text-xs text-gray-400 truncate">{{ opt.location or opt.address }}</p>
+          {% endif %}
+        </div>
+        {% with trip_id=trip.id %}
+          {% include "trips/_star_rating.html" %}
+        {% endwith %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{% endif %}

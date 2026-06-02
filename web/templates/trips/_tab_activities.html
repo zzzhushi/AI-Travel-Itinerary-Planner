@@ -1,0 +1,59 @@
+{% if research_done is defined and research_done %}
+<div class="mb-4 p-3 rounded-lg {% if research_error %}bg-red-50 text-red-700{% else %}bg-green-50 text-green-700{% endif %} text-sm">
+  {% if research_error %}Research error: {{ research_error }}{% else %}Research complete.{% endif %}
+</div>
+{% endif %}
+
+{% if unresearched_count > 0 %}
+<div class="mb-4 flex items-center justify-between bg-orange-50 border border-orange-200 rounded-xl px-4 py-3">
+  <p class="text-sm text-orange-800">
+    <span class="font-medium">{{ unresearched_count }} activit{{ 'y' if unresearched_count == 1 else 'ies' }}</span>
+    pending research
+  </p>
+  <button
+    hx-post="/trips/{{ trip.id }}/research"
+    hx-target="#trip-tabs"
+    hx-swap="innerHTML"
+    class="bg-indigo-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors">
+    Research now
+  </button>
+</div>
+{% endif %}
+
+<div id="activities-list" class="space-y-2">
+  {% for act in activities %}
+    {% include "trips/_activity_row.html" %}
+  {% endfor %}
+</div>
+
+<!-- Add activity form -->
+<form
+  hx-post="/trips/{{ trip.id }}/activities"
+  hx-target="#activities-list"
+  hx-swap="beforeend"
+  hx-on::after-request="this.reset()"
+  class="mt-4 flex flex-wrap gap-2 items-end bg-white border border-dashed border-gray-300 rounded-xl p-4">
+  <div class="flex flex-col gap-1">
+    <label class="text-xs text-gray-500 font-medium">Activity</label>
+    <input name="query" required placeholder="e.g. ramen in Shinjuku"
+      class="border border-gray-300 rounded-lg px-3 py-2 text-sm w-56 focus:outline-none focus:ring-2 focus:ring-indigo-400">
+  </div>
+  <div class="flex flex-col gap-1">
+    <label class="text-xs text-gray-500 font-medium">Category</label>
+    <select name="category"
+      class="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">
+      <option value="">— any —</option>
+      {% for cat in categories %}
+      <option value="{{ cat }}">{{ cat }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <label class="flex items-center gap-2 text-sm text-gray-600 pb-2">
+    <input type="checkbox" name="is_specific" value="true" class="rounded">
+    Specific place
+  </label>
+  <button type="submit"
+    class="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors">
+    + Add
+  </button>
+</form>

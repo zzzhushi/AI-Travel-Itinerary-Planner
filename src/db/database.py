@@ -30,14 +30,24 @@ def _async_url() -> str:
 
 # --- Sync (CLI) ---
 
+_sync_engine = None
+_sync_factory = None
+
+
 def get_sync_engine():
-    return create_engine(_sync_url(), echo=False)
+    global _sync_engine
+    if _sync_engine is None:
+        _sync_engine = create_engine(_sync_url(), echo=False)
+    return _sync_engine
 
 
 def get_sync_session_factory(engine=None):
-    if engine is None:
-        engine = get_sync_engine()
-    return sessionmaker(bind=engine, expire_on_commit=False)
+    global _sync_factory
+    if engine is not None:
+        return sessionmaker(bind=engine, expire_on_commit=False)
+    if _sync_factory is None:
+        _sync_factory = sessionmaker(bind=get_sync_engine(), expire_on_commit=False)
+    return _sync_factory
 
 
 def init_db_sync(engine=None) -> None:
