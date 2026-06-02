@@ -25,7 +25,6 @@ from src.db.queries import (
     get_unrated_count,
     get_unresearched_count,
     set_rating,
-    upsert_schedule,
 )
 from src.services.trip_service import generate_and_save_schedule, research_activities
 from web.deps import get_db
@@ -267,6 +266,8 @@ def add_activity_route(
     session: Session = Depends(get_db),
 ):
     trip = get_trip(session, trip_id)
+    if not trip:
+        return HTMLResponse("", status_code=404)
     cat = category if category and category in ACTIVITY_CATEGORIES else None
     act = add_activity(session, trip_id, query.strip(), cat, is_specific)
     return templates.TemplateResponse("trips/_activity_row.html", {
@@ -360,9 +361,11 @@ def research_status(request: Request, trip_id: int, session: Session = Depends(g
         })
     # Done — return full tab wrapper so the tab bar stays visible
     trip = get_trip(session, trip_id)
+    del _research_jobs[trip_id]
+    if not trip:
+        return HTMLResponse("", status_code=410)
     activities = get_activities(session, trip.id)
     ctx = _trip_context(session, trip)
-    del _research_jobs[trip_id]
     error = job.error
     tab_content = templates.get_template("trips/_tab_activities.html").render({
         **ctx, "request": request, "activities": activities,
@@ -387,9 +390,10 @@ async def rate_option(
     form = await request.form()
     rating = int(form.get("rating", 0))
     opt = session.get(Option, opt_id)
-    if opt:
-        set_rating(session, opt_id, rating if rating > 0 else None)
-        session.refresh(opt)
+    if not opt:
+        return HTMLResponse("", status_code=404)
+    set_rating(session, opt_id, rating if rating > 0 else None)
+    session.refresh(opt)
     return templates.TemplateResponse("trips/_star_rating.html", {
         "request": request, "trip_id": trip_id, "opt": opt,
     })
@@ -408,6 +412,8 @@ async def generate_schedule_route(
     form = await request.form()
     use_llm = form.get("use_llm", "true").lower() != "false"
     trip = get_trip(session, trip_id)
+    if not trip:
+        return HTMLResponse("", status_code=404)
     num_days = trip.num_days or 3
 
     job = _Job()
@@ -429,6 +435,9 @@ def schedule_status(request: Request, trip_id: int, session: Session = Depends(g
             "request": request, "trip_id": trip_id, "message": "Generating schedule…",
         })
     trip = get_trip(session, trip_id)
+    del _schedule_jobs[trip_id]
+    if not trip:
+        return HTMLResponse("", status_code=410)
     schedule = get_schedule(session, trip.id)
     days: dict[int, list] = {}
     for si in schedule:
@@ -439,7 +448,6 @@ def schedule_status(request: Request, trip_id: int, session: Session = Depends(g
     ctx = _trip_context(session, trip)
     warn = job.result.get("warn", "") if job.result else ""
     error = job.error
-    del _schedule_jobs[trip_id]
     tab_content = templates.get_template("trips/_tab_schedule.html").render({
         **ctx, "request": request, "days": days,
         "schedule_done": True, "schedule_warn": warn, "schedule_error": error,
