@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}My Trips{% endblock %}
+{% block content %}
+
+<div class="flex items-center justify-between mb-6">
+  <h1 class="text-2xl font-bold">My Trips</h1>
+</div>
+
+<!-- New trip form -->
+<div class="bg-white border border-gray-200 rounded-xl p-5 mb-6 shadow-sm">
+  <h2 class="font-semibold text-gray-700 mb-3">New Trip</h2>
+  <form action="/trips" method="post" class="flex flex-wrap gap-3 items-end">
+    <div class="flex flex-col gap-1">
+      <label class="text-xs text-gray-500 font-medium">Trip name</label>
+      <input name="name" required placeholder="Japan September 2026"
+        class="border border-gray-300 rounded-lg px-3 py-2 text-sm w-52 focus:outline-none focus:ring-2 focus:ring-indigo-400">
+    </div>
+    <div class="flex flex-col gap-1">
+      <label class="text-xs text-gray-500 font-medium">Destination</label>
+      <input name="destination" required placeholder="Tokyo, Japan"
+        class="border border-gray-300 rounded-lg px-3 py-2 text-sm w-52 focus:outline-none focus:ring-2 focus:ring-indigo-400">
+    </div>
+    <div class="flex flex-col gap-1">
+      <label class="text-xs text-gray-500 font-medium">Days (optional)</label>
+      <input name="num_days" type="number" min="1" max="90" placeholder="5"
+        class="border border-gray-300 rounded-lg px-3 py-2 text-sm w-24 focus:outline-none focus:ring-2 focus:ring-indigo-400">
+    </div>
+    <button type="submit"
+      class="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors">
+      + Create trip
+    </button>
+  </form>
+</div>
+
+<!-- Trip cards -->
+{% if trip_contexts %}
+<div class="grid gap-4">
+  {% for ctx in trip_contexts %}
+  {% set t = ctx.trip %}
+  <a href="/trips/{{ t.id }}"
+    class="bg-white border border-gray-200 rounded-xl p-5 shadow-sm hover:shadow-md hover:border-indigo-300 transition-all flex items-start justify-between">
+    <div>
+      <div class="flex items-center gap-3 mb-1">
+        <h2 class="text-lg font-semibold">{{ t.name }}</h2>
+        {% set sl = ctx.status_label %}
+        {% if sl == "Scheduled" %}
+          <span class="text-xs font-medium px-2 py-0.5 rounded-full bg-green-100 text-green-700">✓ Scheduled</span>
+        {% elif sl == "Ready to schedule" %}
+          <span class="text-xs font-medium px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">Ready to schedule</span>
+        {% elif sl == "Ready to rate" %}
+          <span class="text-xs font-medium px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700">Ready to rate</span>
+        {% elif sl == "Ready to research" %}
+          <span class="text-xs font-medium px-2 py-0.5 rounded-full bg-orange-100 text-orange-700">Ready to research</span>
+        {% else %}
+          <span class="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">Draft</span>
+        {% endif %}
+      </div>
+      <p class="text-sm text-gray-500">
+        {{ t.destination }}
+        {% if t.num_days %} · {{ t.num_days }} days{% endif %}
+      </p>
+      <p class="text-xs text-gray-400 mt-1">
+        {{ ctx.activity_count }} activities ·
+        {{ ctx.activity_count - ctx.unresearched_count }} researched ·
+        {{ ctx.unrated_count }} unrated
+      </p>
+    </div>
+    <span class="text-indigo-500 text-sm font-medium mt-1">View →</span>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<p class="text-gray-400 text-sm">No trips yet. Create one above.</p>
+{% endif %}
+
+{% endblock %}

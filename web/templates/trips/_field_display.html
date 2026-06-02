@@ -1,0 +1,9 @@
+<span id="field-{{ trip.id }}-{{ field }}"
+  hx-get="/trips/{{ trip.id }}/fields/{{ field }}"
+  hx-trigger="click"
+  hx-target="#field-{{ trip.id }}-{{ field }}"
+  hx-swap="outerHTML"
+  title="Click to edit"
+  class="cursor-pointer px-1 rounded hover:bg-gray-100 transition-colors">
+  {{ value if value is not none and value != '' else '—' }}
+</span>

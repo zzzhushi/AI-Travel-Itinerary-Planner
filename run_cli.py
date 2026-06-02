@@ -4,6 +4,9 @@ import asyncio
 import logging
 import sys
 
+from dotenv import load_dotenv
+load_dotenv()
+
 logging.basicConfig(format="%(name)s: %(message)s")
 logging.getLogger("src.agents.base").setLevel(logging.DEBUG)
 

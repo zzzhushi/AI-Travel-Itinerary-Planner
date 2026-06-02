@@ -1,0 +1,48 @@
+<div id="activity-{{ act.id }}"
+  class="flex items-center gap-3 bg-white border border-gray-200 rounded-lg px-4 py-3 hover:border-gray-300 transition-colors">
+
+  <!-- Query (inline-editable) -->
+  <div class="flex-1 min-w-0">
+    <span id="act-query-{{ act.id }}"
+      hx-get="/trips/{{ trip.id }}/activities/{{ act.id }}/edit"
+      hx-trigger="click"
+      hx-target="#activity-{{ act.id }}"
+      hx-swap="outerHTML"
+      title="Click to edit"
+      class="cursor-pointer font-medium text-gray-800 hover:text-indigo-600 transition-colors">
+      {{ act.query }}
+    </span>
+  </div>
+
+  <!-- Category badge -->
+  {% if act.category %}
+  <span class="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">{{ act.category }}</span>
+  {% endif %}
+
+  <!-- Specific flag -->
+  {% if act.is_specific %}
+  <span class="text-xs px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600">specific</span>
+  {% endif %}
+
+  <!-- Research status -->
+  {% if act.researched_at %}
+  <span class="text-xs text-green-600">✓ researched</span>
+  {% else %}
+  <span class="text-xs text-gray-400">⏳ pending</span>
+  {% endif %}
+
+  <!-- Options count -->
+  {% if act.options %}
+  <span class="text-xs text-gray-400">{{ act.options | length }} options</span>
+  {% endif %}
+
+  <!-- Delete -->
+  <button
+    hx-delete="/trips/{{ trip.id }}/activities/{{ act.id }}"
+    hx-target="#activity-{{ act.id }}"
+    hx-swap="outerHTML"
+    hx-confirm="Remove '{{ act.query }}'?"
+    class="text-gray-300 hover:text-red-400 transition-colors text-sm ml-1">
+    ✕
+  </button>
+</div>

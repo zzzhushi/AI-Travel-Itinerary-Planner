@@ -68,6 +68,9 @@ python run_cli.py --dry-run
 # CLI — non-interactive from JSON
 python run_cli.py --json examples/trip.json
 
+# Web UI (FastAPI + HTMX, opens at http://127.0.0.1:8000)
+python run_web.py
+
 # DB migrations (requires DATABASE_URL)
 alembic upgrade head
 

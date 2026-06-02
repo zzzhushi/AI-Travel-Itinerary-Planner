@@ -1,0 +1,16 @@
+<div id="schedule-item-{{ item.id }}" class="flex items-start gap-1.5 py-1">
+  <!-- Lock toggle -->
+  <button
+    hx-patch="/trips/{{ trip_id }}/schedule/{{ item.id }}"
+    hx-vals='{"is_locked": "{{ "false" if item.is_locked else "true" }}"}'
+    hx-target="#schedule-item-{{ item.id }}"
+    hx-swap="outerHTML"
+    title="{{ 'Unlock' if item.is_locked else 'Lock' }} this item"
+    class="text-sm mt-0.5 flex-shrink-0 {% if item.is_locked %}text-indigo-500{% else %}text-gray-200 hover:text-gray-400{% endif %} transition-colors">
+    🔒
+  </button>
+  <!-- Name -->
+  <span class="text-xs text-gray-700 leading-tight">
+    {{ item.option.name if item.option else "Unknown" }}
+  </span>
+</div>

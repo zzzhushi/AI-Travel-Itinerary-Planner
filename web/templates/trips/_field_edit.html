@@ -1,0 +1,12 @@
+<form id="field-{{ trip.id }}-{{ field }}"
+  hx-patch="/trips/{{ trip.id }}"
+  hx-target="#field-{{ trip.id }}-{{ field }}"
+  hx-swap="outerHTML">
+  <input
+    name="{{ field }}"
+    value="{{ value }}"
+    autofocus
+    class="border border-indigo-400 rounded px-2 py-0.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 w-40"
+    onblur="this.form.requestSubmit()"
+    onkeydown="if(event.key==='Enter'){event.preventDefault();this.form.requestSubmit();}">
+</form>
