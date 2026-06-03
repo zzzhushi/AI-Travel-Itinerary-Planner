@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import and_, case, or_
@@ -85,7 +85,7 @@ def get_unresearched_count(session: Session, trip_id: int) -> int:
 def mark_researched(session: Session, activity_id: int) -> None:
     act = session.get(Activity, activity_id)
     if act:
-        act.researched_at = datetime.utcnow()
+        act.researched_at = datetime.now(UTC)
         session.commit()
 
 
