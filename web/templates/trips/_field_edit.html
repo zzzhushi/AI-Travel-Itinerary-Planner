@@ -6,6 +6,7 @@
     name="{{ field }}"
     value="{{ value }}"
     autofocus
+    onfocus="this.select()"
     class="border border-indigo-400 rounded px-2 py-0.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 w-40"
     onblur="if(!this.dataset.cancelling)this.form.requestSubmit()"
     onkeydown="if(event.key==='Enter'){event.preventDefault();this.form.requestSubmit();}
