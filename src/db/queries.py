@@ -5,9 +5,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, case, or_
 from sqlalchemy.orm import Session
 
+from src.agents.planner import SLOT_START_MINUTES
 from src.db.models import Activity, Option, ScheduledItem, Trip
 
 # Google ToS allows caching place data for up to 30 days.
@@ -238,6 +239,7 @@ def upsert_schedule(session: Session, trip_id: int, day_plans) -> None:
                 option_id=item.option_id,
                 day_number=item.day_number,
                 time_slot=item.time_slot,
+                start_minutes=SLOT_START_MINUTES.get(item.time_slot or "", 540),
                 is_locked=False,
             ))
 
@@ -249,6 +251,10 @@ def get_schedule(session: Session, trip_id: int) -> list[ScheduledItem]:
     return (
         session.query(ScheduledItem)
         .filter_by(trip_id=trip_id)
-        .order_by(ScheduledItem.day_number, ScheduledItem.time_slot)
+        .order_by(
+            ScheduledItem.day_number,
+            # NULLs sort last; items without start_minutes fall back to end of day.
+            case((ScheduledItem.start_minutes.is_(None), 9999), else_=ScheduledItem.start_minutes),
+        )
         .all()
     )

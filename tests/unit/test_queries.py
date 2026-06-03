@@ -342,3 +342,47 @@ class TestDurationColumns:
         set_option_duration(session, opt.id, None)
         session.refresh(opt)
         assert opt.default_duration_minutes is None
+
+    def test_upsert_schedule_sets_start_minutes_from_slot(self, session):
+        # upsert_schedule derives start_minutes from the item's time_slot anchor
+        trip = _make_trip(session)
+        act = _make_activity(session, trip)
+        opts = _make_options(session, act, n=3)
+        for opt in opts:
+            from src.db.queries import set_rating
+            set_rating(session, opt.id, 4)
+        from src.agents.planner import DayPlan, ScheduleItem
+        plans = [DayPlan(day_number=1, items=[
+            ScheduleItem(option_id=opts[0].id, name="A", category="sightseeing",
+                         latitude=None, longitude=None, user_rating=4,
+                         day_number=1, time_slot="morning"),
+            ScheduleItem(option_id=opts[1].id, name="B", category="food",
+                         latitude=None, longitude=None, user_rating=4,
+                         day_number=1, time_slot="afternoon"),
+            ScheduleItem(option_id=opts[2].id, name="C", category="nightlife",
+                         latitude=None, longitude=None, user_rating=4,
+                         day_number=1, time_slot="evening"),
+        ])]
+        upsert_schedule(session, trip.id, plans)
+        from src.db.queries import get_schedule
+        scheduled = {si.option_id: si.start_minutes for si in get_schedule(session, trip.id)}
+        assert scheduled[opts[0].id] == 540   # morning → 09:00
+        assert scheduled[opts[1].id] == 780   # afternoon → 13:00
+        assert scheduled[opts[2].id] == 1080  # evening → 18:00
+
+    def test_get_schedule_orders_by_start_minutes(self, session):
+        # Items should come back ordered by start_minutes, not time_slot string
+        from src.db.models import ScheduledItem
+        from src.db.queries import get_schedule
+        trip = _make_trip(session)
+        act = _make_activity(session, trip)
+        opts = _make_options(session, act, n=2)
+        # Insert afternoon before morning (reversed insertion order)
+        session.add(ScheduledItem(trip_id=trip.id, option_id=opts[0].id,
+                                  day_number=1, start_minutes=780))  # afternoon
+        session.add(ScheduledItem(trip_id=trip.id, option_id=opts[1].id,
+                                  day_number=1, start_minutes=540))  # morning
+        session.commit()
+        result = get_schedule(session, trip.id)
+        assert result[0].start_minutes == 540   # morning first
+        assert result[1].start_minutes == 780   # afternoon second

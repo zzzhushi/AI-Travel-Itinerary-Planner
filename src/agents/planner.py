@@ -34,6 +34,9 @@ _CATEGORY_SLOT: dict[str, str] = {
 }
 
 DAY_START_MINUTES = 540  # 09:00 — used by later phases for sequential time layout
+SLOT_START_MINUTES: dict[str, int] = {
+    "morning": 540, "afternoon": 780, "evening": 1080,
+}
 DEFAULT_DURATION_MINUTES = 60  # fallback when a category has no specific default
 
 # Typical visit length (minutes) by category. Seed defaults from issue #28; keep
