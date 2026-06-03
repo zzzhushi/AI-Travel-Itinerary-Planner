@@ -36,7 +36,7 @@
   <!-- Day columns -->
   {% for day_num in range(1, num_days + 1) %}
   {% set items = days.get(day_num, []) %}
-  <div class="flex-shrink-0 w-44 mr-2" data-day-num="{{ day_num }}">
+  <div class="flex-shrink-0 w-44 mr-2" data-day-col="{{ day_num }}">
     <div class="bg-indigo-600 text-white text-sm font-semibold px-3 py-1.5 rounded-t-lg mb-0">
       Day {{ day_num }}
     </div>
@@ -52,13 +52,8 @@
       {% endfor %}
 
       {% for item in items %}
-      {% set start = item.start_minutes if item.start_minutes is not none else 540 %}
-      {% set raw_dur = item.duration_minutes
-          or (item.option.default_duration_minutes if item.option else none)
-          or category_default_duration(item.option.category if item.option else none) %}
-      {% set dur = [raw_dur or 60, 20] | max %}
-      {% set top = [start - TIMELINE_START, 0] | max %}
-      {% with trip_id=trip.id, item_top=top, item_height=dur %}
+      {% set pos = item_position(item) %}
+      {% with trip_id=trip.id, item_top=pos[0], item_height=pos[1] %}
         {% include "trips/_schedule_item.html" %}
       {% endwith %}
       {% endfor %}
@@ -82,7 +77,7 @@
   // are narrowed into tracks.
   // -------------------------------------------------------------------------
   function fixOverlaps(container) {
-    container.querySelectorAll('[data-day-num]').forEach(dayCol => {
+    container.querySelectorAll('[data-day-col]').forEach(dayCol => {
       const timelineDiv = dayCol.querySelector('.relative');
       if (!timelineDiv) return;
 
