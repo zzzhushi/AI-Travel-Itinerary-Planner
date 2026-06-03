@@ -223,7 +223,10 @@ def cmd_generate(session, trip) -> None:
         for item in sorted(dp.items, key=lambda i: i.start_minutes or 0):
             dur = f"{item.duration_minutes}m" if item.duration_minutes else "?"
             locked = " [yellow][locked][/yellow]" if item.is_locked else ""
-            console.print(f"  [{_hhmm(item.start_minutes)}] {item.name}  ({dur}){locked}")
+            line = f"  [{_hhmm(item.start_minutes)}] {item.name}  ({dur}){locked}"
+            if item.note:
+                line += f"  [dim]— {item.note}[/dim]"
+            console.print(line)
         console.print()
 
 

@@ -225,19 +225,17 @@ class TestApplyLlmRefinement:
         locked = next(i for i in result[0].items if i.option_id == 1)
         assert locked.start_minutes == 720   # original preserved
 
-    def test_dropped_item_is_added_back_at_end_of_day(self):
-        # LLM omits one item → re-appended after the last placed item
+    def test_dropped_item_is_excluded_from_result(self):
+        # LLM intentionally drops an item (doesn't fit) → it stays out of the schedule
         original = self._make_items([(1, 1, 540, False, 120), (2, 1, 660, False, 60)])
         llm_days = [{"day": 1, "items": [
             {"option_id": 1, "start_minutes": 540, "note": ""},
-            # opt 2 dropped
+            # opt 2 dropped by LLM — too low priority to fit
         ]}]
         result = apply_llm_refinement(llm_days, original, num_days=1)
         all_ids = {i.option_id for dp in result for i in dp.items}
-        assert 2 in all_ids
-        opt2 = next(i for dp in result for i in dp.items if i.option_id == 2)
-        # Should be placed after item 1 ends (540 + 120 = 660)
-        assert opt2.start_minutes == 660
+        assert 1 in all_ids
+        assert 2 not in all_ids   # LLM's drop decision is respected
 
     def test_hallucinated_option_id_is_ignored(self):
         original = self._make_items([(1, 1, 540, False, 60)])
@@ -249,14 +247,30 @@ class TestApplyLlmRefinement:
         all_ids = {i.option_id for dp in result for i in dp.items}
         assert 999 not in all_ids
 
-    def test_invalid_start_minutes_falls_back_to_original(self):
-        # LLM returns a start_minutes out of range → original start used
+    def test_invalid_start_minutes_falls_back_to_sequential(self):
+        # LLM returns a start_minutes out of range → sequential time used (not original)
         original = self._make_items([(1, 1, 600, False, 60)])
         llm_days = [{"day": 1, "items": [
             {"option_id": 1, "start_minutes": 9999, "note": ""},  # invalid
         ]}]
         result = apply_llm_refinement(llm_days, original, num_days=1)
-        assert result[0].items[0].start_minutes == 600   # original restored
+        # Should land at DAY_START_MINUTES, not the original 600
+        assert result[0].items[0].start_minutes == DAY_START_MINUTES
+
+    def test_missing_start_minutes_uses_llm_ordering_sequentially(self):
+        # LLM reorders two items but omits start_minutes → placed sequentially
+        # from DAY_START_MINUTES in LLM order (not original order)
+        original = self._make_items([(1, 1, 540, False, 120), (2, 1, 660, False, 60)])
+        llm_days = [{"day": 1, "items": [
+            {"option_id": 2, "note": "first"},   # LLM puts 2 first, no time given
+            {"option_id": 1, "note": "second"},  # LLM puts 1 second, no time given
+        ]}]
+        result = apply_llm_refinement(llm_days, original, num_days=1)
+        by_id = {i.option_id: i for i in result[0].items}
+        # Item 2 is placed first: starts at DAY_START_MINUTES
+        assert by_id[2].start_minutes == DAY_START_MINUTES
+        # Item 1 follows after item 2's duration (60 min)
+        assert by_id[1].start_minutes == DAY_START_MINUTES + 60
 
     def test_day_number_above_num_days_returns_empty(self):
         # Day 4 in a 3-day trip → reject entirely (fixes #17)

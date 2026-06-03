@@ -91,6 +91,7 @@ class ScheduleItem:
     time_slot: Optional[str] = None        # soft-retired; kept for DB backfill reads
     start_minutes: Optional[int] = None   # clock placement set by planner
     duration_minutes: Optional[int] = None
+    note: Optional[str] = None            # LLM placement rationale
 
 
 @dataclass
@@ -181,88 +182,117 @@ def apply_llm_refinement(
     original_day_plans: list[DayPlan],
     num_days: int,
 ) -> list[DayPlan]:
-    """Convert LLM JSON output into DayPlan objects with real clock times.
+    """Merge the LLM's scheduling decisions with the original item metadata.
 
-    Returns [] if the output is malformed or empty — caller should fall back
-    to the deterministic schedule.
+    The LLM is responsible for three things:
+      1. Which day each item goes on (it can move items across days).
+      2. What time each item starts (start_minutes, minutes from midnight).
+      3. A one-line note explaining the placement.
 
-    Guarantees:
-    - Locked items keep their original start_minutes and duration_minutes.
-    - Unlocked items use the LLM-assigned start_minutes (validated 0–1439).
-    - Items the LLM dropped are re-added at the end of their original day.
-    - Hallucinated option_ids (not in original) are silently ignored.
-    - Days outside 1..num_days cause a full rejection (return []).
+    Everything else — name, category, lat/lng, duration, user_rating — comes
+    from original_day_plans, which is the source of truth for item data.
+    The LLM only knows what we told it in the prompt; we never trust it to
+    invent or change item metadata.
+
+    Time assignment priority per item:
+      - Locked items: always keep their original start_minutes (the user pinned them).
+      - Unlocked items: use the LLM's start_minutes if it's a valid int 0–1439;
+        otherwise fall forward sequentially from the previous item's end time
+        so the LLM's *ordering* still drives placement even when times are missing.
+
+    Safety guarantees:
+      - Hallucinated option_ids (not in original) are silently ignored.
+      - Duplicate option_ids in LLM output are ignored after the first occurrence.
+      - A day number outside 1..num_days causes the entire output to be rejected
+        (returns []) so the caller can fall back to the deterministic schedule.
+      - Items the LLM omitted entirely are re-appended at the end of their
+        original day as overflow, preserving all rated options in the schedule.
+
+    Returns [] on empty or malformed input — caller should use the deterministic
+    schedule as a fallback.
     """
     if not llm_days:
         return []
 
+    # Build a flat lookup of all original items by option_id.
+    # This is the authoritative source for item metadata and locked times.
     originals: dict[int, ScheduleItem] = {
         item.option_id: item
         for dp in original_day_plans
         for item in dp.items
     }
 
-    seen_ids: set[int] = set()
+    seen_ids: set[int] = set()  # guards against duplicates and tracks what the LLM covered
     result: list[DayPlan] = []
 
     for day_dict in llm_days:
         day_num = day_dict.get("day")
+        # Reject the whole output if any day number is out of range.
+        # A hallucinated day 5 on a 3-day trip would silently drop real items.
         if not isinstance(day_num, int) or not (1 <= day_num <= num_days):
             return []
+
         dp = DayPlan(day_number=day_num)
+
+        # current_time is the sequential fallback clock for this day.
+        # When the LLM gives a valid start_minutes we use it directly and
+        # advance current_time past that item's end. When the LLM omits or
+        # gives an invalid time we place the item at current_time instead,
+        # so the LLM's ordering still determines the schedule rather than
+        # silently reverting to the original deterministic times.
+        current_time = DAY_START_MINUTES
+
         for item_dict in day_dict.get("items", []):
             opt_id = item_dict.get("option_id")
             orig = originals.get(opt_id)
+            # Skip hallucinated option_ids and any item seen on an earlier day.
             if orig is None or opt_id in seen_ids:
                 continue
             seen_ids.add(opt_id)
 
             raw_start = item_dict.get("start_minutes")
             valid_start = isinstance(raw_start, int) and 0 <= raw_start <= 1439
+            # Duration comes from the original item; the LLM doesn't change it.
+            duration = orig.duration_minutes or category_default_duration(orig.category)
+            note = item_dict.get("note") or None
 
             if orig.is_locked:
+                # Locked items are user-pinned anchors. The LLM can order
+                # around them but cannot move their time.
+                start = orig.start_minutes if orig.start_minutes is not None else current_time
                 dp.items.append(ScheduleItem(
                     option_id=orig.option_id, name=orig.name,
                     category=orig.category, latitude=orig.latitude,
                     longitude=orig.longitude, user_rating=orig.user_rating,
                     is_locked=True, day_number=orig.day_number,
-                    start_minutes=orig.start_minutes,
+                    start_minutes=start,
                     duration_minutes=orig.duration_minutes,
+                    note=note,
                 ))
             else:
+                # Use the LLM's time when valid; fall forward to current_time otherwise.
+                start = raw_start if valid_start else current_time
                 dp.items.append(ScheduleItem(
                     option_id=orig.option_id, name=orig.name,
                     category=orig.category, latitude=orig.latitude,
                     longitude=orig.longitude, user_rating=orig.user_rating,
                     is_locked=False, day_number=day_num,
-                    start_minutes=raw_start if valid_start else (orig.start_minutes or DAY_START_MINUTES),
+                    start_minutes=start,
                     duration_minutes=orig.duration_minutes,
+                    note=note,
                 ))
+
+            # Advance the clock past this item's end so the next item without
+            # a valid time starts immediately after.
+            current_time = start + duration
+
         result.append(dp)
 
-    # Re-add items the LLM dropped at the end of their original day
-    for opt_id, orig in originals.items():
-        if opt_id not in seen_ids:
-            day_num = orig.day_number or 1
-            target = next((d for d in result if d.day_number == day_num), None)
-            if target is None:
-                target = DayPlan(day_number=day_num)
-                result.append(target)
-            end_time = (
-                max(
-                    (i.start_minutes or 0) + (i.duration_minutes or category_default_duration(i.category))
-                    for i in target.items
-                )
-                if target.items else DAY_START_MINUTES
-            )
-            target.items.append(ScheduleItem(
-                option_id=orig.option_id, name=orig.name,
-                category=orig.category, latitude=orig.latitude,
-                longitude=orig.longitude, user_rating=orig.user_rating,
-                is_locked=orig.is_locked, day_number=day_num,
-                start_minutes=end_time,
-                duration_minutes=orig.duration_minutes,
-            ))
+    # Items the LLM omitted are intentionally excluded — the LLM drops
+    # lower-priority items that don't fit within the day window. Forcing
+    # them back in would create days longer than DAY_END_MINUTES and undo
+    # the LLM's packing decision. Dropped items remain unscheduled until
+    # the user regenerates or manually places them.
 
     return sorted(result, key=lambda d: d.day_number)
 
