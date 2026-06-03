@@ -15,30 +15,59 @@
 </div>
 {% else %}
 
-<div class="flex gap-4 overflow-x-auto pb-2">
+{% set window_px = TIMELINE_END - TIMELINE_START %}
+
+<div class="flex gap-0 overflow-x-auto pb-4">
+
+  <!-- Time axis -->
+  <div class="flex-shrink-0 w-12 relative mr-2" style="height: {{ window_px }}px; margin-top: 36px;">
+    {% for h in range(7, 24) %}
+    {% set top = (h * 60) - TIMELINE_START %}
+    <div class="absolute right-0 flex items-center gap-1" style="top: {{ top }}px; transform: translateY(-50%);">
+      <span class="text-[10px] text-gray-400 whitespace-nowrap">{{ "%02d:00"|format(h) }}</span>
+      <div class="w-2 border-t border-gray-200"></div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <!-- Day columns -->
   {% for day_num in days | sort %}
   {% set items = days[day_num] %}
-  <div class="flex-shrink-0 w-56 bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
-    <div class="bg-indigo-600 text-white text-sm font-semibold px-4 py-2">Day {{ day_num }}</div>
-    <div class="divide-y divide-gray-100">
-      {% for slot in ["morning", "afternoon", "evening"] %}
-      {% set slot_items = items | selectattr("time_slot", "equalto", slot) | list %}
-      <div class="px-3 py-2">
-        <p class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-1">{{ slot }}</p>
-        {% if slot_items %}
-          {% for item in slot_items %}
-          {% with trip_id=trip.id %}
-            {% include "trips/_schedule_item.html" %}
-          {% endwith %}
-          {% endfor %}
-        {% else %}
-          <p class="text-xs text-gray-200 italic">—</p>
-        {% endif %}
-      </div>
+  <div class="flex-shrink-0 w-44 mr-2">
+    <!-- Day header -->
+    <div class="bg-indigo-600 text-white text-sm font-semibold px-3 py-1.5 rounded-t-lg mb-0">
+      Day {{ day_num }}
+    </div>
+
+    <!-- Timeline column -->
+    <div class="relative bg-white border border-gray-200 border-t-0 rounded-b-lg overflow-hidden"
+         style="height: {{ window_px }}px;">
+
+      <!-- Hour gridlines -->
+      {% for h in range(7, 24) %}
+      {% set top = (h * 60) - TIMELINE_START %}
+      <div class="absolute inset-x-0 border-t border-gray-100 pointer-events-none"
+           style="top: {{ top }}px;"></div>
       {% endfor %}
+
+      <!-- Items -->
+      {% for item in items %}
+      {% set start = item.start_minutes if item.start_minutes is not none else 540 %}
+      {% set raw_dur = item.duration_minutes
+          or (item.option.default_duration_minutes if item.option else none)
+          or category_default_duration(item.option.category if item.option else none) %}
+      {% set dur = [raw_dur or 60, 20] | max %}
+      {% set top = start - TIMELINE_START %}
+      {% set top = [top, 0] | max %}
+      {% with trip_id=trip.id, item_top=top, item_height=dur %}
+        {% include "trips/_schedule_item.html" %}
+      {% endwith %}
+      {% endfor %}
+
     </div>
   </div>
   {% endfor %}
+
 </div>
 
 {% endif %}

@@ -52,6 +52,17 @@ templates.env.filters["from_json"] = _safe_from_json
 from src.agents.planner import category_default_duration  # noqa: E402
 templates.env.globals["category_default_duration"] = category_default_duration
 
+
+def _hhmm(minutes: int) -> str:
+    h, m = divmod(int(minutes), 60)
+    return f"{h:02d}:{m:02d}"
+
+
+templates.env.filters["hhmm"] = _hhmm
+# Timeline window: 07:00–23:00 at 1 px/min = 960 px tall per day column.
+templates.env.globals["TIMELINE_START"] = 420   # 07:00
+templates.env.globals["TIMELINE_END"] = 1380    # 23:00
+
 # ---------------------------------------------------------------------------
 # In-memory job state (research + schedule generation per trip)
 # ---------------------------------------------------------------------------
@@ -234,9 +245,8 @@ def _render_tab(request: Request, session: Session, trip: Trip, tab: str, ctx: d
         days: dict[int, list] = {}
         for si in schedule:
             days.setdefault(si.day_number, []).append(si)
-        slot_order = {"morning": 0, "afternoon": 1, "evening": 2}
         for items in days.values():
-            items.sort(key=lambda x: slot_order.get(x.time_slot or "", 3))
+            items.sort(key=lambda x: x.start_minutes if x.start_minutes is not None else 9999)
         return templates.get_template("trips/_tab_schedule.html").render({
             **ctx, "request": request, "days": days,
         })
