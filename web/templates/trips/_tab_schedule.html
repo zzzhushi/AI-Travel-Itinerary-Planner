@@ -73,16 +73,14 @@
 (function () {
   const SCALE = 1;       // px per minute
   const SNAP  = 15;      // snap to 15-min grid
-  const COL_W = 176 + 8; // w-44 + mr-2
+  const COL_W = 176 + 8; // w-44 (176px) + mr-2 (8px)
 
-  // ---------------------------------------------------------------------------
-  // Overlap layout — items with overlapping time windows are placed
+  // -------------------------------------------------------------------------
+  // Overlap layout — items sharing the same time window are placed
   // side-by-side; non-overlapping items keep their full column width.
-  //
-  // Algorithm: union-find builds connected components of overlapping items.
-  // Components with one member → full width.
-  // Multi-member components → greedy track assignment within the component.
-  // ---------------------------------------------------------------------------
+  // Union-Find builds connected components; only multi-member components
+  // are narrowed into tracks.
+  // -------------------------------------------------------------------------
   function fixOverlaps(container) {
     container.querySelectorAll('[data-day-num]').forEach(dayCol => {
       const timelineDiv = dayCol.querySelector('.relative');
@@ -102,37 +100,28 @@
       function find(i) { return par[i] === i ? i : (par[i] = find(par[i])); }
       function union(a, b) { par[find(a)] = find(b); }
 
-      for (let i = 0; i < items.length; i++) {
-        for (let j = i + 1; j < items.length; j++) {
-          if (items[i].start < items[j].end && items[j].start < items[i].end) {
+      for (let i = 0; i < items.length; i++)
+        for (let j = i + 1; j < items.length; j++)
+          if (items[i].start < items[j].end && items[j].start < items[i].end)
             union(i, j);
-          }
-        }
-      }
 
-      // Group by component root
       const groups = new Map();
       items.forEach((_, i) => {
-        const root = find(i);
-        if (!groups.has(root)) groups.set(root, []);
-        groups.get(root).push(i);
+        const r = find(i);
+        if (!groups.has(r)) groups.set(r, []);
+        groups.get(r).push(i);
       });
 
       const colW = timelineDiv.offsetWidth;
 
       groups.forEach(group => {
         if (group.length === 1) {
-          // No overlapping neighbours — restore full width
           const el = items[group[0]].el;
-          el.style.left  = '1px';
-          el.style.right = '1px';
-          el.style.width = '';
+          el.style.left = '1px'; el.style.right = '1px'; el.style.width = '';
           return;
         }
-
         // Greedy track assignment within this overlap group
-        const trackEnds = [];
-        const trackOf   = [];
+        const trackEnds = [], trackOf = [];
         group.forEach(i => {
           const { start, end } = items[i];
           let ti = trackEnds.findIndex(te => te <= start);
@@ -140,14 +129,10 @@
           trackEnds[ti] = end;
           trackOf.push(ti);
         });
-
-        const numTracks = trackEnds.length;
-        const trackW    = Math.floor(colW / numTracks);
-
+        const trackW = Math.floor(colW / trackEnds.length);
         group.forEach((i, gi) => {
-          const el = items[i].el;
-          const ti = trackOf[gi];
-          el.style.left  = (ti * trackW + 1) + 'px';
+          const el = items[i].el, ti = trackOf[gi];
+          el.style.left = (ti * trackW + 1) + 'px';
           el.style.right = 'auto';
           el.style.width = (trackW - 2) + 'px';
         });
@@ -155,9 +140,11 @@
     });
   }
 
-  // ---------------------------------------------------------------------------
-  // Drag & resize
-  // ---------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // Drag & resize — attach to each element by reference, not by CSS
+  // selector string, so interact.js doesn't rely on event delegation which
+  // can miss dynamically swapped HTMX content.
+  // -------------------------------------------------------------------------
   const container = document.getElementById('schedule-timeline');
   if (!container || !window.interact) return;
 
@@ -166,75 +153,71 @@
 
   fixOverlaps(container);
 
-  // Re-run after any HTMX swap (e.g. lock-toggle partial swap that does NOT
-  // reload the whole tab). The full tab refresh re-executes this IIFE anyway.
-  document.addEventListener('htmx:afterSwap', () => {
-    const c = document.getElementById('schedule-timeline');
-    if (c) fixOverlaps(c);
+  container.querySelectorAll('.schedule-item').forEach(el => {
+    const handle = el.querySelector('.resize-handle');
+
+    interact(el)
+      .draggable({
+        listeners: {
+          move(e) {
+            const t = e.target;
+            const x = (parseFloat(t.dataset.dragX) || 0) + e.dx;
+            const y = (parseFloat(t.dataset.dragY) || 0) + e.dy;
+            t.style.transform = `translate(${x}px,${y}px)`;
+            t.dataset.dragX = x;
+            t.dataset.dragY = y;
+            t.style.opacity = '0.75';
+            t.style.zIndex  = '20';
+          },
+          end(e) {
+            const t  = e.target;
+            const dy = parseFloat(t.dataset.dragY) || 0;
+            const dx = parseFloat(t.dataset.dragX) || 0;
+            t.style.transform = '';
+            t.style.opacity   = '';
+            t.style.zIndex    = '';
+            t.dataset.dragX   = 0;
+            t.dataset.dragY   = 0;
+
+            const origStart = parseInt(t.dataset.startMinutes);
+            let newStart = Math.round((origStart + dy / SCALE) / SNAP) * SNAP;
+            newStart = Math.max(420, Math.min(1380, newStart));
+
+            const dayDelta = Math.round(dx / COL_W);
+            const origDay  = parseInt(t.dataset.dayNum);
+            const newDay   = Math.max(1, Math.min(numDays, origDay + dayDelta));
+
+            fetch(`/trips/${tripId}/schedule/${t.dataset.itemId}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: `start_minutes=${newStart}&day_number=${newDay}`
+            }).then(() => htmx.ajax('GET', `/trips/${tripId}/tabs/schedule`,
+                                    { target: '#trip-tabs', swap: 'innerHTML' }));
+          }
+        }
+      })
+      .resizable({
+        // Use the element reference to the resize handle, not a CSS selector
+        // string, to avoid any scoping ambiguity in the interact.js resolver.
+        edges: { bottom: handle || false },
+        listeners: {
+          move(e) {
+            e.target.style.height = `${e.rect.height}px`;
+          },
+          end(e) {
+            const t = e.target;
+            let dur = Math.round(e.rect.height / SNAP) * SNAP;
+            dur = Math.max(15, Math.min(1440, dur));
+            fetch(`/trips/${tripId}/schedule/${t.dataset.itemId}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: `duration_minutes=${dur}`
+            }).then(() => htmx.ajax('GET', `/trips/${tripId}/tabs/schedule`,
+                                    { target: '#trip-tabs', swap: 'innerHTML' }));
+          }
+        }
+      });
   });
-
-  // Single chained interact() call so drag and resize share the same
-  // Interactable and interact.js correctly routes bottom-edge events to
-  // resize instead of letting drag swallow them first.
-  interact('.schedule-item')
-    .draggable({
-      listeners: {
-        move(e) {
-          const t = e.target;
-          const x = (parseFloat(t.dataset.dragX) || 0) + e.dx;
-          const y = (parseFloat(t.dataset.dragY) || 0) + e.dy;
-          t.style.transform = `translate(${x}px,${y}px)`;
-          t.dataset.dragX = x;
-          t.dataset.dragY = y;
-          t.style.opacity = '0.75';
-          t.style.zIndex  = '20';
-        },
-        end(e) {
-          const t  = e.target;
-          const dy = parseFloat(t.dataset.dragY) || 0;
-          const dx = parseFloat(t.dataset.dragX) || 0;
-          t.style.transform = '';
-          t.style.opacity   = '';
-          t.style.zIndex    = '';
-          t.dataset.dragX   = 0;
-          t.dataset.dragY   = 0;
-
-          const origStart = parseInt(t.dataset.startMinutes);
-          let newStart = Math.round((origStart + dy / SCALE) / SNAP) * SNAP;
-          newStart = Math.max(420, Math.min(1380, newStart));
-
-          const dayDelta = Math.round(dx / COL_W);
-          const origDay  = parseInt(t.dataset.dayNum);
-          const newDay   = Math.max(1, Math.min(numDays, origDay + dayDelta));
-
-          fetch(`/trips/${tripId}/schedule/${t.dataset.itemId}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `start_minutes=${newStart}&day_number=${newDay}`
-          }).then(() => htmx.ajax('GET', `/trips/${tripId}/tabs/schedule`,
-                                  { target: '#trip-tabs', swap: 'innerHTML' }));
-        }
-      }
-    })
-    .resizable({
-      edges: { bottom: '.resize-handle' },
-      listeners: {
-        move(e) {
-          e.target.style.height = `${e.rect.height}px`;
-        },
-        end(e) {
-          const t = e.target;
-          let dur = Math.round(e.rect.height / SNAP) * SNAP;
-          dur = Math.max(15, Math.min(1440, dur));
-          fetch(`/trips/${tripId}/schedule/${t.dataset.itemId}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `duration_minutes=${dur}`
-          }).then(() => htmx.ajax('GET', `/trips/${tripId}/tabs/schedule`,
-                                  { target: '#trip-tabs', swap: 'innerHTML' }));
-        }
-      }
-    });
 }());
 </script>
 
