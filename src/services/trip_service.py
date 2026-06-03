@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -170,3 +170,30 @@ async def generate_and_save_schedule(
 
     upsert_schedule(session, trip.id, result.day_plans)
     return result
+
+
+_CONVERTIBLE_FIELDS = frozenset(("name", "destination", "num_days", "start_date", "end_date"))
+
+
+def update_trip_fields(session: Session, trip: Trip, raw_fields: dict) -> None:
+    """Convert and apply a subset of raw form values to a Trip, then commit.
+
+    Only fields present in raw_fields and in _CONVERTIBLE_FIELDS are touched.
+    Raises ValueError if a date field contains a non-empty, non-ISO-8601 string.
+    """
+    for field, raw in raw_fields.items():
+        if field not in _CONVERTIBLE_FIELDS:
+            continue
+        if field == "num_days":
+            stripped = str(raw).strip()
+            value = int(stripped) if stripped.isdigit() else None
+        elif field in ("start_date", "end_date"):
+            stripped = str(raw).strip()
+            if not stripped:
+                value = None
+            else:
+                value = date.fromisoformat(stripped)  # raises ValueError on bad input
+        else:
+            value = str(raw).strip()
+        setattr(trip, field, value)
+    session.commit()

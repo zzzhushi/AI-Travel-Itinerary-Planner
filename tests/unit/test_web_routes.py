@@ -207,6 +207,12 @@ def test_update_missing_trip_returns_404(client):
     assert r.status_code == 404
 
 
+def test_update_trip_invalid_date_returns_422(client, db_factory):
+    trip_id = _make_trip(db_factory)
+    r = client.patch(f"/trips/{trip_id}", data={"start_date": "not-a-date"})
+    assert r.status_code == 422
+
+
 # ---------------------------------------------------------------------------
 # Rating
 # ---------------------------------------------------------------------------

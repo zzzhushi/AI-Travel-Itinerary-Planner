@@ -23,6 +23,7 @@ from src.services.trip_service import (
     generate_and_save_schedule,
     research_activities,
     research_and_enrich,
+    update_trip_fields,
 )
 from tests.mocks.places_client import MockPlacesClient
 
@@ -223,6 +224,7 @@ class TestResearchAndEnrich:
 
     @pytest.mark.asyncio
     async def test_enrichment_failure_preserves_research(self, session):
+
         # A Places failure must not discard research results (best-effort enrichment).
         trip = create_trip(session, "Test", "Tokyo", 3)
         summary = [{"query": "ramen", "options_saved": 1, "error": ""}]
@@ -233,3 +235,53 @@ class TestResearchAndEnrich:
             summaries, stats = await research_and_enrich(session, trip, MockPlacesClient())
         assert summaries == summary
         assert stats == {"enriched": 0, "skipped": 0, "failed": 0}
+
+
+# ---------------------------------------------------------------------------
+# update_trip_fields
+# ---------------------------------------------------------------------------
+
+class TestUpdateTripFields:
+    def test_updates_name_and_destination(self, session):
+        trip = create_trip(session, "Old Name", "Paris", 3)
+        update_trip_fields(session, trip, {"name": "  New Name  ", "destination": "Tokyo"})
+        assert trip.name == "New Name"
+        assert trip.destination == "Tokyo"
+
+    def test_num_days_parsed_from_string(self, session):
+        trip = create_trip(session, "T", "Tokyo", 3)
+        update_trip_fields(session, trip, {"num_days": "7"})
+        assert trip.num_days == 7
+
+    def test_num_days_non_numeric_becomes_none(self, session):
+        trip = create_trip(session, "T", "Tokyo", 3)
+        update_trip_fields(session, trip, {"num_days": "abc"})
+        assert trip.num_days is None
+
+    def test_num_days_empty_string_becomes_none(self, session):
+        trip = create_trip(session, "T", "Tokyo", 3)
+        update_trip_fields(session, trip, {"num_days": ""})
+        assert trip.num_days is None
+
+    def test_valid_start_date_parsed(self, session):
+        from datetime import date
+        trip = create_trip(session, "T", "Tokyo", 3)
+        update_trip_fields(session, trip, {"start_date": "2026-09-01"})
+        assert trip.start_date == date(2026, 9, 1)
+
+    def test_empty_date_becomes_none(self, session):
+        from datetime import date
+        trip = create_trip(session, "T", "Tokyo", 3)
+        trip.start_date = date(2026, 9, 1)
+        update_trip_fields(session, trip, {"start_date": ""})
+        assert trip.start_date is None
+
+    def test_invalid_date_raises_value_error(self, session):
+        trip = create_trip(session, "T", "Tokyo", 3)
+        with pytest.raises(ValueError):
+            update_trip_fields(session, trip, {"start_date": "not-a-date"})
+
+    def test_unknown_fields_are_ignored(self, session):
+        trip = create_trip(session, "T", "Tokyo", 3)
+        update_trip_fields(session, trip, {"id": "999", "created_at": "2020-01-01"})
+        assert trip.id != 999  # unchanged
