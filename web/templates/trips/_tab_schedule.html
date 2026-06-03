@@ -37,32 +37,27 @@
   {% for day_num in days | sort %}
   {% set items = days[day_num] %}
   <div class="flex-shrink-0 w-44 mr-2" data-day-num="{{ day_num }}">
-    <!-- Day header -->
     <div class="bg-indigo-600 text-white text-sm font-semibold px-3 py-1.5 rounded-t-lg mb-0">
       Day {{ day_num }}
     </div>
-
-    <!-- Timeline column — no overflow-hidden so items remain visible during
-         cross-column drag and the bottom-edge resize handle is reachable. -->
+    <!-- No overflow-hidden: keeps items visible during cross-column drag
+         and lets the bottom resize handle receive pointer events. -->
     <div class="relative bg-white border border-gray-200 border-t-0 rounded-b-lg"
          style="height: {{ window_px }}px;">
 
-      <!-- Hour gridlines -->
       {% for h in range(7, 24) %}
       {% set top = (h * 60) - TIMELINE_START %}
       <div class="absolute inset-x-0 border-t border-gray-100 pointer-events-none"
            style="top: {{ top }}px;"></div>
       {% endfor %}
 
-      <!-- Items -->
       {% for item in items %}
       {% set start = item.start_minutes if item.start_minutes is not none else 540 %}
       {% set raw_dur = item.duration_minutes
           or (item.option.default_duration_minutes if item.option else none)
           or category_default_duration(item.option.category if item.option else none) %}
       {% set dur = [raw_dur or 60, 20] | max %}
-      {% set top = start - TIMELINE_START %}
-      {% set top = [top, 0] | max %}
+      {% set top = [start - TIMELINE_START, 0] | max %}
       {% with trip_id=trip.id, item_top=top, item_height=dur %}
         {% include "trips/_schedule_item.html" %}
       {% endwith %}
@@ -76,55 +71,92 @@
 
 <script>
 (function () {
-  const SCALE = 1;        // px per minute (matches TIMELINE_START/END at 1px/min)
-  const SNAP  = 15;       // snap to 15-min grid
-  const COL_W = 176 + 8;  // w-44 (176px) + mr-2 (8px gap)
+  const SCALE = 1;       // px per minute
+  const SNAP  = 15;      // snap to 15-min grid
+  const COL_W = 176 + 8; // w-44 + mr-2
 
   // ---------------------------------------------------------------------------
-  // Overlap layout — shift items sharing the same time into side-by-side tracks
+  // Overlap layout — items with overlapping time windows are placed
+  // side-by-side; non-overlapping items keep their full column width.
+  //
+  // Algorithm: union-find builds connected components of overlapping items.
+  // Components with one member → full width.
+  // Multi-member components → greedy track assignment within the component.
   // ---------------------------------------------------------------------------
   function fixOverlaps(container) {
     container.querySelectorAll('[data-day-num]').forEach(dayCol => {
       const timelineDiv = dayCol.querySelector('.relative');
       if (!timelineDiv) return;
 
-      const items = Array.from(timelineDiv.querySelectorAll('[data-item-id]'))
-        .sort((a, b) => (parseInt(a.dataset.startMinutes) || 540)
-                      - (parseInt(b.dataset.startMinutes) || 540));
+      const els = Array.from(timelineDiv.querySelectorAll('[data-item-id]'));
+      if (els.length <= 1) return;
 
-      if (items.length === 0) return;
+      const items = els.map(el => ({
+        el,
+        start: parseInt(el.dataset.startMinutes) || 540,
+        get end() { return this.start + (parseInt(this.el.style.height) || 60); },
+      })).sort((a, b) => a.start - b.start);
 
-      // Assign each item to the first track whose last item has already ended.
-      const trackEnds = [];  // end-time (minutes) of last item in each track
-      const assignments = new Map();
+      // Union-Find
+      const par = items.map((_, i) => i);
+      function find(i) { return par[i] === i ? i : (par[i] = find(par[i])); }
+      function union(a, b) { par[find(a)] = find(b); }
 
-      items.forEach(item => {
-        const start  = parseInt(item.dataset.startMinutes) || 540;
-        const height = parseInt(item.style.height) || 60;
-        const end    = start + height; // 1px == 1min so height ≈ duration
-        let ti = trackEnds.findIndex(tEnd => tEnd <= start);
-        if (ti === -1) ti = trackEnds.length;
-        trackEnds[ti] = end;
-        assignments.set(item, ti);
+      for (let i = 0; i < items.length; i++) {
+        for (let j = i + 1; j < items.length; j++) {
+          if (items[i].start < items[j].end && items[j].start < items[i].end) {
+            union(i, j);
+          }
+        }
+      }
+
+      // Group by component root
+      const groups = new Map();
+      items.forEach((_, i) => {
+        const root = find(i);
+        if (!groups.has(root)) groups.set(root, []);
+        groups.get(root).push(i);
       });
 
-      const numTracks = Math.max(trackEnds.length, 1);
-      if (numTracks === 1) return;  // no overlaps — leave original layout intact
+      const colW = timelineDiv.offsetWidth;
 
-      const colW   = timelineDiv.offsetWidth;
-      const trackW = Math.floor(colW / numTracks);
+      groups.forEach(group => {
+        if (group.length === 1) {
+          // No overlapping neighbours — restore full width
+          const el = items[group[0]].el;
+          el.style.left  = '1px';
+          el.style.right = '1px';
+          el.style.width = '';
+          return;
+        }
 
-      items.forEach(item => {
-        const ti = assignments.get(item) || 0;
-        item.style.left  = (ti * trackW + 1) + 'px';
-        item.style.right = 'auto';
-        item.style.width = (trackW - 2) + 'px';
+        // Greedy track assignment within this overlap group
+        const trackEnds = [];
+        const trackOf   = [];
+        group.forEach(i => {
+          const { start, end } = items[i];
+          let ti = trackEnds.findIndex(te => te <= start);
+          if (ti === -1) ti = trackEnds.length;
+          trackEnds[ti] = end;
+          trackOf.push(ti);
+        });
+
+        const numTracks = trackEnds.length;
+        const trackW    = Math.floor(colW / numTracks);
+
+        group.forEach((i, gi) => {
+          const el = items[i].el;
+          const ti = trackOf[gi];
+          el.style.left  = (ti * trackW + 1) + 'px';
+          el.style.right = 'auto';
+          el.style.width = (trackW - 2) + 'px';
+        });
       });
     });
   }
 
   // ---------------------------------------------------------------------------
-  // Drag & resize via interact.js
+  // Drag & resize
   // ---------------------------------------------------------------------------
   const container = document.getElementById('schedule-timeline');
   if (!container || !window.interact) return;
@@ -132,74 +164,77 @@
   const tripId  = container.dataset.tripId;
   const numDays = parseInt(container.dataset.numDays);
 
-  // Fix overlaps on initial render, then after every HTMX swap that
-  // replaces the tab (the script re-executes, but we also listen for swaps
-  // that don't re-execute this script, e.g. the lock-toggle partial swap).
   fixOverlaps(container);
+
+  // Re-run after any HTMX swap (e.g. lock-toggle partial swap that does NOT
+  // reload the whole tab). The full tab refresh re-executes this IIFE anyway.
   document.addEventListener('htmx:afterSwap', () => {
     const c = document.getElementById('schedule-timeline');
     if (c) fixOverlaps(c);
-  }, { once: false });
-
-  interact('.schedule-draggable').draggable({
-    listeners: {
-      move(e) {
-        const t = e.target;
-        const x = (parseFloat(t.dataset.dragX) || 0) + e.dx;
-        const y = (parseFloat(t.dataset.dragY) || 0) + e.dy;
-        t.style.transform = `translate(${x}px,${y}px)`;
-        t.dataset.dragX = x;
-        t.dataset.dragY = y;
-        t.style.opacity = '0.75';
-        t.style.zIndex  = '20';
-      },
-      end(e) {
-        const t   = e.target;
-        const dy  = parseFloat(t.dataset.dragY) || 0;
-        const dx  = parseFloat(t.dataset.dragX) || 0;
-        t.style.transform = '';
-        t.style.opacity   = '';
-        t.style.zIndex    = '';
-        t.dataset.dragX   = 0;
-        t.dataset.dragY   = 0;
-
-        const origStart = parseInt(t.dataset.startMinutes);
-        let newStart = Math.round((origStart + dy / SCALE) / SNAP) * SNAP;
-        newStart = Math.max(420, Math.min(1380, newStart));
-
-        const dayDelta = Math.round(dx / COL_W);
-        const origDay  = parseInt(t.dataset.dayNum);
-        const newDay   = Math.max(1, Math.min(numDays, origDay + dayDelta));
-
-        fetch(`/trips/${tripId}/schedule/${t.dataset.itemId}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: `start_minutes=${newStart}&day_number=${newDay}`
-        }).then(() => htmx.ajax('GET', `/trips/${tripId}/tabs/schedule`,
-                                { target: '#trip-tabs', swap: 'innerHTML' }));
-      }
-    }
   });
 
-  interact('.schedule-resizable').resizable({
-    edges: { bottom: true },
-    listeners: {
-      move(e) {
-        e.target.style.height = `${e.rect.height}px`;
-      },
-      end(e) {
-        const t = e.target;
-        let dur = Math.round(e.rect.height / SNAP) * SNAP;
-        dur = Math.max(15, Math.min(1440, dur));
-        fetch(`/trips/${tripId}/schedule/${t.dataset.itemId}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: `duration_minutes=${dur}`
-        }).then(() => htmx.ajax('GET', `/trips/${tripId}/tabs/schedule`,
-                                { target: '#trip-tabs', swap: 'innerHTML' }));
+  // Single chained interact() call so drag and resize share the same
+  // Interactable and interact.js correctly routes bottom-edge events to
+  // resize instead of letting drag swallow them first.
+  interact('.schedule-item')
+    .draggable({
+      listeners: {
+        move(e) {
+          const t = e.target;
+          const x = (parseFloat(t.dataset.dragX) || 0) + e.dx;
+          const y = (parseFloat(t.dataset.dragY) || 0) + e.dy;
+          t.style.transform = `translate(${x}px,${y}px)`;
+          t.dataset.dragX = x;
+          t.dataset.dragY = y;
+          t.style.opacity = '0.75';
+          t.style.zIndex  = '20';
+        },
+        end(e) {
+          const t  = e.target;
+          const dy = parseFloat(t.dataset.dragY) || 0;
+          const dx = parseFloat(t.dataset.dragX) || 0;
+          t.style.transform = '';
+          t.style.opacity   = '';
+          t.style.zIndex    = '';
+          t.dataset.dragX   = 0;
+          t.dataset.dragY   = 0;
+
+          const origStart = parseInt(t.dataset.startMinutes);
+          let newStart = Math.round((origStart + dy / SCALE) / SNAP) * SNAP;
+          newStart = Math.max(420, Math.min(1380, newStart));
+
+          const dayDelta = Math.round(dx / COL_W);
+          const origDay  = parseInt(t.dataset.dayNum);
+          const newDay   = Math.max(1, Math.min(numDays, origDay + dayDelta));
+
+          fetch(`/trips/${tripId}/schedule/${t.dataset.itemId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `start_minutes=${newStart}&day_number=${newDay}`
+          }).then(() => htmx.ajax('GET', `/trips/${tripId}/tabs/schedule`,
+                                  { target: '#trip-tabs', swap: 'innerHTML' }));
+        }
       }
-    }
-  });
+    })
+    .resizable({
+      edges: { bottom: '.resize-handle' },
+      listeners: {
+        move(e) {
+          e.target.style.height = `${e.rect.height}px`;
+        },
+        end(e) {
+          const t = e.target;
+          let dur = Math.round(e.rect.height / SNAP) * SNAP;
+          dur = Math.max(15, Math.min(1440, dur));
+          fetch(`/trips/${tripId}/schedule/${t.dataset.itemId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `duration_minutes=${dur}`
+          }).then(() => htmx.ajax('GET', `/trips/${tripId}/tabs/schedule`,
+                                  { target: '#trip-tabs', swap: 'innerHTML' }));
+        }
+      }
+    });
 }());
 </script>
 
