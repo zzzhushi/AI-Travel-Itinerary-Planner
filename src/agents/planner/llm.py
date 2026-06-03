@@ -131,58 +131,76 @@ def apply_llm_refinement(
       - Unlocked items starting at/after DAY_END_MINUTES are dropped (day-window cap).
       - Locked items are never dropped and never window-capped.
 
-    Bug fixes bundled here (#44, #45):
-      - #44: locked items are placed on their original day_number (not the LLM's day).
-      - #45: duplicate LLM day entries reuse the same DayPlan instead of creating two.
+    Locked item guarantees:
+      - Placed on their original pinned day_number, regardless of which day the LLM listed them under.
+      - If the LLM omitted them entirely, they are re-attached in phase 3.
+      - seen_ids prevents any option_id from appearing more than once in the result.
     """
     if not llm_days:
         return []
 
+    # -----------------------------------------------------------------------
+    # Phase 1: build a flat lookup of every original item by option_id.
+    # This is the authoritative source for metadata (name, category, duration,
+    # locked state, pinned start_minutes). We never trust the LLM to supply
+    # or mutate these fields.
+    # -----------------------------------------------------------------------
     originals: dict[int, ScheduleItem] = {
         item.option_id: item
         for dp in original_day_plans
         for item in dp.items
     }
 
+    # seen_ids tracks items that have been placed. Every append is preceded by
+    # seen_ids.add(), so the same option_id can never appear twice in the result.
     seen_ids: set[int] = set()
     result_by_day: dict[int, DayPlan] = {}
 
     def _get_or_create_day(day_num: int) -> DayPlan:
         if day_num not in result_by_day:
-            dp = DayPlan(day_number=day_num)
-            result_by_day[day_num] = dp
+            result_by_day[day_num] = DayPlan(day_number=day_num)
         return result_by_day[day_num]
 
+    # -----------------------------------------------------------------------
+    # Phase 2: process the LLM's output day by day.
+    # For each item the LLM listed we either place it (respecting locks and the
+    # day window) or skip it (hallucinated id, duplicate, or past the window).
+    # If the LLM repeated the same day number, _get_or_create_day reuses the
+    # existing DayPlan so items from both entries land in the same bucket.
+    # -----------------------------------------------------------------------
     for day_dict in llm_days:
         day_num = day_dict.get("day")
         if not isinstance(day_num, int) or not (1 <= day_num <= num_days):
             return []
 
-        # #45: reuse existing DayPlan if the LLM repeated this day number
         dp = _get_or_create_day(day_num)
+        # current_time is a sequential fallback clock: when the LLM omits a
+        # valid start_minutes we place the item immediately after the previous
+        # one so the LLM's ordering still drives placement.
         current_time = DAY_START_MINUTES
 
         for item_dict in day_dict.get("items", []):
             opt_id = item_dict.get("option_id")
             orig = originals.get(opt_id)
             if orig is None or opt_id in seen_ids:
-                continue
+                continue  # hallucinated id or already placed
 
             duration = orig.duration_minutes or category_default_duration(orig.category)
             note = item_dict.get("note") or None
 
             if orig.is_locked:
-                # #44: place locked items on their pinned day, not the LLM's day.
+                # Locked items are user-pinned anchors. Place them on their
+                # original day (not necessarily the LLM's day) at their pinned
+                # time. Advance the fallback clock so the next untimed unlocked
+                # item doesn't land before this anchor.
                 start = orig.start_minutes if orig.start_minutes is not None else current_time
+                pinned_day = orig.day_number if (orig.day_number and 1 <= orig.day_number <= num_days) else day_num
                 seen_ids.add(opt_id)
-                target_dp = _get_or_create_day(
-                    orig.day_number if (orig.day_number and 1 <= orig.day_number <= num_days) else day_num
-                )
-                target_dp.items.append(ScheduleItem(
+                _get_or_create_day(pinned_day).items.append(ScheduleItem(
                     option_id=orig.option_id, name=orig.name,
                     category=orig.category, latitude=orig.latitude,
                     longitude=orig.longitude, user_rating=orig.user_rating,
-                    is_locked=True, day_number=target_dp.day_number,
+                    is_locked=True, day_number=pinned_day,
                     start_minutes=start,
                     duration_minutes=orig.duration_minutes,
                     note=note,
@@ -190,12 +208,16 @@ def apply_llm_refinement(
                 current_time = max(current_time, start + duration)
                 continue
 
+            # Unlocked: use the LLM's start_minutes when valid (0–1439),
+            # otherwise fall forward to current_time.
             raw_start = item_dict.get("start_minutes")
             valid_start = isinstance(raw_start, int) and 0 <= raw_start <= 1439
             start = raw_start if valid_start else current_time
 
+            # Day-window cap: drop items that would start at or after 21:00.
+            # Don't mark seen — the LLM may still place this item on another day.
             if start >= DAY_END_MINUTES:
-                continue  # don't mark seen; LLM may place it on another day
+                continue
 
             seen_ids.add(opt_id)
             dp.items.append(ScheduleItem(
@@ -209,14 +231,19 @@ def apply_llm_refinement(
             ))
             current_time = start + duration
 
-    # Re-attach locked items the LLM omitted entirely.
+    # -----------------------------------------------------------------------
+    # Phase 3: re-attach locked items the LLM omitted entirely.
+    # Unlocked omissions stay dropped — that is the LLM's intentional
+    # "doesn't fit" decision. Locked items are user-pinned and must survive.
+    # seen_ids prevents duplicates: if a locked item was already placed in
+    # phase 2 it will be in seen_ids and skipped here.
+    # -----------------------------------------------------------------------
     for orig in originals.values():
         if not orig.is_locked or orig.option_id in seen_ids:
             continue
         day = orig.day_number if (orig.day_number and 1 <= orig.day_number <= num_days) else 1
-        target_dp = _get_or_create_day(day)
         seen_ids.add(orig.option_id)
-        target_dp.items.append(ScheduleItem(
+        _get_or_create_day(day).items.append(ScheduleItem(
             option_id=orig.option_id, name=orig.name,
             category=orig.category, latitude=orig.latitude,
             longitude=orig.longitude, user_rating=orig.user_rating,

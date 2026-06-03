@@ -4,7 +4,7 @@ Strategy:
 1. Filter to options with user_rating >= min_rating.
 2. Distribute free items round-robin across num_days (build_schedule).
 3. For each day, drop lowest-rated overflow items that don't fit the 09:00–21:00
-   window (_fit_day_within_window — fixes #41).
+   window (_fit_day_within_window).
 4. Lay surviving items back-to-back in category order (_assign_start_times).
 5. Locked items are never moved or dropped.
 """

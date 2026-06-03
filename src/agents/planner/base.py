@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Optional, Protocol, runtime_checkable
+from typing import Optional, Protocol
 
 from src.agents.planner.types import DayPlan
 
@@ -16,7 +16,6 @@ class PlanResult:
     warning: str = ""
 
 
-@runtime_checkable
 class SchedulePlanner(Protocol):
     async def plan(
         self,
