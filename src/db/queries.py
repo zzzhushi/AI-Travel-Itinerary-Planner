@@ -8,7 +8,6 @@ from typing import Optional
 from sqlalchemy import and_, case, or_
 from sqlalchemy.orm import Session
 
-from src.agents.planner import SLOT_START_MINUTES
 from src.db.models import Activity, Option, ScheduledItem, Trip
 
 # Google ToS allows caching place data for up to 30 days.
@@ -202,12 +201,12 @@ def get_rated_options_for_schedule(session: Session, trip_id: int) -> list[dict]
             "option_id": opt.id,
             "name": opt.name,
             # Prefer the researcher's per-option category; fall back to the
-            # activity's category, then "other". The activity category is often
-            # blank or broad, so the option category yields better time slots.
+            # activity's category, then "other".
             "category": opt.category or act.category or "other",
             "latitude": opt.latitude,
             "longitude": opt.longitude,
             "user_rating": opt.user_rating,
+            "default_duration_minutes": opt.default_duration_minutes,
             "is_locked": si.is_locked if si else False,
             "day_number": si.day_number if si else None,
             "time_slot": si.time_slot if si else None,
@@ -238,8 +237,9 @@ def upsert_schedule(session: Session, trip_id: int, day_plans) -> None:
                 trip_id=trip_id,
                 option_id=item.option_id,
                 day_number=item.day_number,
-                time_slot=item.time_slot,
-                start_minutes=SLOT_START_MINUTES.get(item.time_slot or "", 540),
+                time_slot=None,
+                start_minutes=item.start_minutes,
+                duration_minutes=item.duration_minutes,
                 is_locked=False,
             ))
 

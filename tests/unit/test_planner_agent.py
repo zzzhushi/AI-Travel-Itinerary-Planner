@@ -15,20 +15,22 @@ def _make_day_plans() -> list[DayPlan]:
     """Build a minimal 2-day schedule for use as refine() input."""
     day1 = DayPlan(day_number=1, items=[
         ScheduleItem(option_id=1, name="Temple A", category="culture",
-                     latitude=35.6, longitude=139.7, user_rating=4, time_slot="morning"),
+                     latitude=35.6, longitude=139.7, user_rating=4,
+                     start_minutes=540, duration_minutes=120),
     ])
     day2 = DayPlan(day_number=2, items=[
         ScheduleItem(option_id=2, name="Ramen B", category="food",
-                     latitude=35.7, longitude=139.8, user_rating=5, time_slot="afternoon"),
+                     latitude=35.7, longitude=139.8, user_rating=5,
+                     start_minutes=720, duration_minutes=60),
     ])
     return [day1, day2]
 
 
 def _make_refined_json() -> str:
-    """Valid JSON array that matches the planner's expected output format."""
+    """Valid JSON array matching the P5 planner output format (start_minutes per item)."""
     return json.dumps([
-        {"day": 1, "items": [{"option_id": 1, "name": "Temple A", "time_slot": "morning", "note": "Start early"}]},
-        {"day": 2, "items": [{"option_id": 2, "name": "Ramen B", "time_slot": "afternoon", "note": "Lunch spot"}]},
+        {"day": 1, "items": [{"option_id": 1, "name": "Temple A", "start_minutes": 540, "note": "Start early"}]},
+        {"day": 2, "items": [{"option_id": 2, "name": "Ramen B", "start_minutes": 720, "note": "Lunch spot"}]},
     ])
 
 

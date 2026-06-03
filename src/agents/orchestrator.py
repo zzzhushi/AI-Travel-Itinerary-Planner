@@ -111,7 +111,7 @@ async def generate_schedule(
         if err:
             warn = f"LLM refinement skipped: {err}"
         else:
-            refined = apply_llm_refinement(llm_days, day_plans)
+            refined = apply_llm_refinement(llm_days, day_plans, num_days)
             if refined:
                 day_plans = refined
             else:
