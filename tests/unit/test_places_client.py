@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from src.maps.places_client import _parse_place, _parse_price_level
+from src.clients.places_client import _parse_place, _parse_price_level
 from tests.mocks.places_client import MockPlacesClient, SAMPLE_PLACE
 
 
@@ -30,7 +30,7 @@ class TestMockPlacesClient:
 
     def test_empty_maps_search_returns_none(self):
         # PlacesClient.lookup short-circuits on empty string
-        from src.maps.places_client import PlacesClient
+        from src.clients.places_client import PlacesClient
         # We cannot call real PlacesClient without a key, but _parse_place is testable directly.
         # This test verifies MockPlacesClient is consistent with the contract.
         client = MockPlacesClient(return_data=SAMPLE_PLACE)

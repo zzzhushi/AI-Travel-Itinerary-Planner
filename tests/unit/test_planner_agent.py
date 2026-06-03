@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from src.agents.planner import (
+from src.workers.planner import (
     DAY_END_MINUTES,
     DAY_START_MINUTES,
     DayPlan,

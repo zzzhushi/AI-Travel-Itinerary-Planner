@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import pytest
 
-from src.agents.planner import (
+from src.workers.planner import (
     DAY_END_MINUTES,
     DAY_START_MINUTES,
     DEFAULT_DURATION_MINUTES,
@@ -19,7 +19,7 @@ from src.agents.planner import (
     ScheduleItem,
     category_default_duration,
 )
-from src.agents.planner.deterministic import _assign_start_times, _fit_day_within_window
+from src.workers.planner.deterministic import _assign_start_times, _fit_day_within_window
 
 
 def _opt(

@@ -13,9 +13,9 @@ from datetime import date, timedelta
 from typing import Optional
 
 from src.agents.base import LlmAgent, _extract_json
-from src.agents.planner.base import PlanResult
-from src.agents.planner.deterministic import build_schedule
-from src.agents.planner.types import (
+from src.workers.planner.base import PlanResult
+from src.workers.planner.deterministic import build_schedule
+from src.workers.planner.types import (
     DAY_END_MINUTES,
     DAY_START_MINUTES,
     DayPlan,

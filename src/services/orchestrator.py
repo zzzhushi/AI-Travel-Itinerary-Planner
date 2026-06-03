@@ -14,8 +14,8 @@ import threading
 from datetime import date
 from typing import Optional
 
-from src.agents.researcher import ResearcherAgent, RESEARCHER_INSTRUCTION
-from src.agents.planner import (
+from src.workers.researcher import ResearcherAgent, RESEARCHER_INSTRUCTION
+from src.workers.planner import (
     DeterministicPlanner,
     LlmPlanner,
     PlanResult,

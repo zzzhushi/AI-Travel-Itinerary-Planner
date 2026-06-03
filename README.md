@@ -1,14 +1,14 @@
 # Itinerary Planner
 
-A multi-agent travel itinerary planner powered by Google Gemini. Create trips, research activities, rate options, and generate a day-by-day schedule. Available as both a CLI and a web UI (FastAPI + HTMX).
+A multi-agent travel itinerary planner powered by Google Gemini. Create trips, research activities, rate options, and generate a day-by-day schedule — as a CLI or web UI (FastAPI + HTMX).
 
 ## How it works
 
-1. **Create a trip** — give it a destination (e.g. "Tokyo, Japan") and optionally how many days
+1. **Create a trip** — destination and number of days
 2. **Add activities** — vague ("ramen in Shinjuku") or specific ("Ichiran Ramen Shinjuku")
-3. **Research** — the agent searches the web and returns 4–5 real options per activity
-4. **Rate** — score each option 1–5 based on how much you want to go
-5. **Schedule** — the planner distributes rated options across days and generates a day-by-day itinerary, with an optional AI pass for better ordering
+3. **Research** — Gemini + Google Search returns 4–5 real options per activity, optionally enriched with hours, ratings, and map links via Google Places
+4. **Rate** — score each option 1–5; only options rated ≥ 3 are scheduled
+5. **Schedule** — options are distributed across days; an optional AI pass assigns real clock times, respects opening hours, and minimises geographic backtracking. Lock any item to pin it to its day and time across regenerations.
 
 ## Local setup
 
@@ -30,6 +30,7 @@ cp .env.example .env
 | Variable | Required | Purpose |
 |---|---|---|
 | `GOOGLE_API_KEY` | Yes | Gemini + Google Search (research agent) |
+| `GOOGLE_MAPS_API_KEY` | No | Google Places enrichment (hours, ratings, map links) |
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
 
 ### 3. Database setup
@@ -39,15 +40,12 @@ createdb itinerary
 alembic upgrade head
 ```
 
-### 4. Run the app
+### 4. Run
 
 **CLI:**
 ```bash
-# Interactive mode
-python run_cli.py
-
-# Validate config without making API calls
-python run_cli.py --dry-run
+python run_cli.py            # interactive
+python run_cli.py --dry-run  # validate config without API calls
 ```
 
 **Web UI** (opens at `http://127.0.0.1:8000`):
@@ -55,21 +53,15 @@ python run_cli.py --dry-run
 python run_web.py
 ```
 
-## Web UI walkthrough
+## Web UI
 
-Open `http://127.0.0.1:8000` in your browser.
-
-**Trip list** — shows all trips with their status (No activities / Ready to research / Ready to rate / Ready to schedule / Scheduled). Use the form at the top to create a new trip.
-
-**Trip dashboard** — click any trip to open its dashboard. Fields (name, destination, days, dates) are inline-editable — click a value to edit it in place.
-
-The dashboard has three tabs:
+Open `http://127.0.0.1:8000`. Create a trip, then use the three-tab dashboard:
 
 | Tab | What you can do |
 |---|---|
-| **Activities** | Add activities by typing a query (e.g. "ramen in Shinjuku"). Set a category and mark it as specific if you want a particular place. Edit or delete existing activities. Click **Research** to fetch 4–5 real options per activity via Gemini + Google Search. |
-| **Options** | Review the researched options grouped by activity. Rate each option 1–5 stars — only options rated ≥ 3 are included in the schedule. |
-| **Schedule** | Click **Generate schedule** to distribute rated options across days. Toggle **Use AI** to enable the Gemini refinement pass (assigns real clock times, respects opening hours, minimises geographic backtracking). Each scheduled item shows its day, start time, and an optional AI note. You can lock an item (padlock icon) to pin it to its current day and time — locked items survive repeated regenerations unchanged. |
+| **Activities** | Add activities by query. Mark as specific if you want a particular place. Click **Research** to fetch options via Gemini + Google Search. |
+| **Options** | Review options grouped by activity. Rate each 1–5 stars — only options rated ≥ 3 appear in the schedule. |
+| **Schedule** | Click **Generate schedule**. Toggle **Use AI** for the Gemini refinement pass (real clock times, opening hours, geographic flow). Lock an item to pin it to its day and time across regenerations. |
 
 ## CLI walkthrough
 
@@ -89,46 +81,10 @@ Rank Options
 
 Generating itinerary: 5 days, 4 options
 
-Day 1  [afternoon] Ichiran Ramen
-Day 2  [afternoon] Fuunji
+Day 1  09:00  Ichiran Ramen
+Day 2  09:00  Fuunji
 ...
 ```
-
-## Project structure
-
-```
-src/
-  agents/
-    providers/          # LLMProvider ABC + GeminiProvider
-    researcher.py       # ResearcherAgent — Gemini + Google Search
-    planner.py          # PlannerAgent (LLM refinement) + build_schedule() (pure Python)
-    orchestrator.py     # Public API: research(), research_batch(), generate_schedule()
-  db/
-    models.py           # SQLAlchemy ORM models
-    queries.py          # DB query helpers
-    database.py         # Sync + async session factories
-  services/
-    trip_service.py     # Shared business logic (CLI + web routes both use this)
-  cli.py                # Interactive CLI
-
-run_cli.py              # CLI entry point
-run_web.py              # Web entry point (uvicorn)
-alembic/                # DB migrations
-tests/unit/             # Unit tests — no API keys or DB required
-web/
-  app.py                # FastAPI routes (trip CRUD, research, schedule, rating)
-  deps.py               # DB session dependency
-  templates/trips/      # Jinja2 + HTMX templates (list, dashboard, tab partials)
-```
-
-## Key design decisions
-
-- **Idempotent research** — activities are hashed by `(trip_id, query)`; re-running won't create duplicate options
-- **Injectable providers** — agents take a `LLMProvider` at construction; `MockProvider` in tests means no API keys needed to run the test suite
-- **Service layer** — `src/services/trip_service.py` holds the business logic shared between the CLI and the coming web routes
-- **Strategy-based scheduling** — two interchangeable planners behind a common interface: `DeterministicPlanner` (pure Python, always bounded to 09:00–21:00, drops lowest-rated overflow) and `LlmPlanner` (Gemini, assigns real clock times, respects opening hours, minimises geographic backtracking). The coordinator tries the LLM first and falls back to deterministic on any failure, so rate limits or API errors always produce a usable schedule.
-- **Locked items** — mark a scheduled item as locked to pin it to its day and clock time. The planner never moves or drops locked items, and the pin survives repeated regenerations.
-- **Day numbers vs dates** — the schedule uses `day_number` (1-based) until `start_date` is set on the trip
 
 ## Running tests
 
@@ -139,7 +95,8 @@ pytest               # all tests
 
 ## Coming soon
 
-- Geo clustering — group nearby activities onto the same day
-- User and activity preferences — travel style, pace, duration hints
-- Budget tracking
-- Drag-drop calendar in the web UI
+- Geo clustering — group nearby options onto the same day
+- User preferences — trip-wide style and per-activity hints
+- Map view — visualise schedule and options on a map
+- Travel times between stops (Maps API)
+- Flights and hotel bookings

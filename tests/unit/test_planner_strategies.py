@@ -9,8 +9,8 @@ import json
 
 import pytest
 
-from src.agents.orchestrator import generate_schedule
-from src.agents.planner import DAY_END_MINUTES, PlanResult
+from src.services.orchestrator import generate_schedule
+from src.workers.planner import DAY_END_MINUTES, PlanResult
 from tests.mocks.provider import MockProvider
 
 
@@ -35,8 +35,8 @@ def _options(n: int = 4, *, duration: int = 120) -> list[dict]:
 
 def _patch_llm_planner(monkeypatch, provider: MockProvider):
     """Swap the thread-local LlmPlanner's provider for testing."""
-    from src.agents import orchestrator
-    from src.agents.planner import LlmPlanner
+    from src.services import orchestrator
+    from src.workers.planner import LlmPlanner
 
     monkeypatch.setattr(orchestrator, "_get_llm_planner", lambda: LlmPlanner(provider))
 

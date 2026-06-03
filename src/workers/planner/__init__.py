@@ -5,10 +5,10 @@ _assign_start_times, _fit_day_within_window) are not exported — use the
 strategy classes instead.
 """
 
-from src.agents.planner.base import PlanResult, SchedulePlanner
-from src.agents.planner.deterministic import DeterministicPlanner
-from src.agents.planner.llm import LlmPlanner, PLANNER_INSTRUCTION
-from src.agents.planner.types import (
+from src.workers.planner.base import PlanResult, SchedulePlanner
+from src.workers.planner.deterministic import DeterministicPlanner
+from src.workers.planner.llm import LlmPlanner, PLANNER_INSTRUCTION
+from src.workers.planner.types import (
     DAY_END_MINUTES,
     DAY_START_MINUTES,
     DEFAULT_DURATION_MINUTES,

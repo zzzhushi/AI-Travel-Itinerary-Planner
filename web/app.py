@@ -27,7 +27,7 @@ from src.db.queries import (
     set_option_duration,
     set_rating,
 )
-from src.maps.places_client import places_client_from_env
+from src.clients.places_client import places_client_from_env
 from src.services.trip_service import generate_and_save_schedule, research_and_enrich
 from web.deps import get_db
 
@@ -49,7 +49,7 @@ def _safe_from_json(s: str) -> list:
 
 templates.env.filters["from_json"] = _safe_from_json
 
-from src.agents.planner import category_default_duration  # noqa: E402
+from src.workers.planner import category_default_duration  # noqa: E402
 templates.env.globals["category_default_duration"] = category_default_duration
 
 
@@ -67,7 +67,7 @@ _TIMELINE_START = 420  # mirrors the Jinja global; used in route code
 
 def _item_position(item: ScheduledItem) -> tuple[int, int]:
     """Return (item_top_px, item_height_px) for the timeline render."""
-    from src.agents.planner import DEFAULT_DURATION_MINUTES, category_default_duration
+    from src.workers.planner import DEFAULT_DURATION_MINUTES, category_default_duration
     start = item.start_minutes if item.start_minutes is not None else 540
     opt = item.option
     eff_dur = (item.duration_minutes
