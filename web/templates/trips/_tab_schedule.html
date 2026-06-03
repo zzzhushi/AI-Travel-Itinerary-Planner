@@ -17,7 +17,10 @@
 
 {% set window_px = TIMELINE_END - TIMELINE_START %}
 
-<div class="flex gap-0 overflow-x-auto pb-4">
+<div id="schedule-timeline"
+     class="flex gap-0 overflow-x-auto pb-4"
+     data-trip-id="{{ trip.id }}"
+     data-num-days="{{ days | length }}">
 
   <!-- Time axis -->
   <div class="flex-shrink-0 w-12 relative mr-2" style="height: {{ window_px }}px; margin-top: 36px;">
@@ -33,7 +36,7 @@
   <!-- Day columns -->
   {% for day_num in days | sort %}
   {% set items = days[day_num] %}
-  <div class="flex-shrink-0 w-44 mr-2">
+  <div class="flex-shrink-0 w-44 mr-2" data-day-num="{{ day_num }}">
     <!-- Day header -->
     <div class="bg-indigo-600 text-white text-sm font-semibold px-3 py-1.5 rounded-t-lg mb-0">
       Day {{ day_num }}
@@ -69,5 +72,79 @@
   {% endfor %}
 
 </div>
+
+<script>
+(function () {
+  const SCALE = 1;        // px per minute (matches TIMELINE_START/END at 1px/min)
+  const SNAP  = 15;       // snap to 15-min grid
+  const COL_W = 176 + 8;  // w-44 (176px) + mr-2 (8px gap)
+
+  const container = document.getElementById('schedule-timeline');
+  if (!container || !window.interact) return;
+
+  const tripId  = container.dataset.tripId;
+  const numDays = parseInt(container.dataset.numDays);
+
+  interact('.schedule-draggable').draggable({
+    listeners: {
+      move(e) {
+        const t = e.target;
+        const x = (parseFloat(t.dataset.dragX) || 0) + e.dx;
+        const y = (parseFloat(t.dataset.dragY) || 0) + e.dy;
+        t.style.transform = `translate(${x}px,${y}px)`;
+        t.dataset.dragX = x;
+        t.dataset.dragY = y;
+        t.style.opacity = '0.75';
+        t.style.zIndex  = '10';
+      },
+      end(e) {
+        const t   = e.target;
+        const dy  = parseFloat(t.dataset.dragY) || 0;
+        const dx  = parseFloat(t.dataset.dragX) || 0;
+        // Reset visual transform
+        t.style.transform = '';
+        t.style.opacity   = '';
+        t.style.zIndex    = '';
+        t.dataset.dragX   = 0;
+        t.dataset.dragY   = 0;
+        // Compute new values
+        const origStart = parseInt(t.dataset.startMinutes);
+        let newStart = Math.round((origStart + dy / SCALE) / SNAP) * SNAP;
+        newStart = Math.max(420, Math.min(1380, newStart));
+        const dayDelta = Math.round(dx / COL_W);
+        const origDay  = parseInt(t.dataset.dayNum);
+        const newDay   = Math.max(1, Math.min(numDays, origDay + dayDelta));
+        // Persist + refresh tab
+        fetch(`/trips/${tripId}/schedule/${t.dataset.itemId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: `start_minutes=${newStart}&day_number=${newDay}`
+        }).then(() => htmx.ajax('GET', `/trips/${tripId}/tabs/schedule`,
+                                { target: '#trip-tabs', swap: 'innerHTML' }));
+      }
+    }
+  });
+
+  interact('.schedule-resizable').resizable({
+    edges: { bottom: true },
+    listeners: {
+      move(e) {
+        e.target.style.height = `${e.rect.height}px`;
+      },
+      end(e) {
+        const t = e.target;
+        let dur = Math.round(e.rect.height / SNAP) * SNAP;
+        dur = Math.max(15, Math.min(1440, dur));
+        fetch(`/trips/${tripId}/schedule/${t.dataset.itemId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: `duration_minutes=${dur}`
+        }).then(() => htmx.ajax('GET', `/trips/${tripId}/tabs/schedule`,
+                                { target: '#trip-tabs', swap: 'innerHTML' }));
+      }
+    }
+  });
+}());
+</script>
 
 {% endif %}

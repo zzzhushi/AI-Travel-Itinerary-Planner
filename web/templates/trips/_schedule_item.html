@@ -1,9 +1,15 @@
 <div id="schedule-item-{{ item.id }}"
   class="absolute inset-x-1 rounded overflow-hidden border flex flex-col px-1.5 py-0.5 text-xs
-    {% if item.is_locked %}border-indigo-400 bg-indigo-50{% else %}border-gray-300 bg-white{% endif %}"
-  style="top: {{ item_top }}px; height: {{ item_height }}px; min-height: 20px;">
+    {% if item.is_locked %}border-indigo-400 bg-indigo-50
+    {% else %}border-gray-300 bg-white schedule-draggable schedule-resizable cursor-grab{% endif %}"
+  style="top: {{ item_top }}px; height: {{ item_height }}px; min-height: 20px;"
+  data-item-id="{{ item.id }}"
+  data-trip-id="{{ trip_id }}"
+  data-day-num="{{ item.day_number }}"
+  data-start-minutes="{{ item.start_minutes or 540 }}"
+  {% if item.is_locked %}data-locked="true"{% endif %}>
 
-  <div class="flex items-center gap-1 leading-tight">
+  <div class="flex items-center gap-1 leading-tight overflow-hidden">
     <!-- Lock toggle -->
     <button
       hx-patch="/trips/{{ trip_id }}/schedule/{{ item.id }}"
