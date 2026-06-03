@@ -28,7 +28,7 @@ from src.db.queries import (
     set_rating,
 )
 from src.clients.places_client import places_client_from_env
-from src.services.trip_service import generate_and_save_schedule, research_and_enrich
+from src.services.trip_service import generate_and_save_schedule, research_and_enrich, update_trip_fields
 from web.deps import get_db
 
 app = FastAPI(title="Itinerary Planner")
@@ -311,15 +311,10 @@ async def update_trip_field(
     trip = get_trip(session, trip_id)
     if not trip:
         return HTMLResponse("", status_code=404)
-    for field in ("name", "destination", "num_days", "start_date", "end_date"):
-        if field in form:
-            raw = form[field]
-            if field == "num_days":
-                val = int(raw) if str(raw).strip().isdigit() else None
-            else:
-                val = str(raw).strip() or None if field in ("start_date", "end_date") else str(raw).strip()
-            setattr(trip, field, val)
-    session.commit()
+    try:
+        update_trip_fields(session, trip, dict(form))
+    except ValueError as exc:
+        return HTMLResponse(str(exc), status_code=422)
     session.refresh(trip)
     field = next(iter(form.keys()), "name")
     value = getattr(trip, field, "") or ""
