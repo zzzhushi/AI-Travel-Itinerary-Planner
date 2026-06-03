@@ -37,3 +37,6 @@ class MockPlacesClient:
     def lookup(self, maps_search: str) -> Optional[dict]:
         self.calls.append(maps_search)
         return self._return_data
+
+    def close(self) -> None:
+        pass

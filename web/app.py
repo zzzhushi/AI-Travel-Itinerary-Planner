@@ -109,20 +109,22 @@ def _trip_context(
 
 def _run_research_and_enrich_background(trip_id: int, job: _Job) -> None:
     """Background thread: research activities and enrich options with Places data."""
+    client = places_client_from_env()
     try:
         SessionFactory = get_sync_session_factory()
         with SessionFactory() as session:
             trip = session.get(Trip, trip_id)
             if trip is None:
-                job.done = True
                 return
             summaries, _stats = asyncio.run(
-                research_and_enrich(session, trip, places_client_from_env())
+                research_and_enrich(session, trip, client)
             )
         job.result = summaries
     except Exception as e:
         job.error = str(e)
     finally:
+        if client is not None:
+            client.close()
         job.done = True
 
 

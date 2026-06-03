@@ -40,9 +40,24 @@ class PlacesClient:
 
     def __init__(self, api_key: str) -> None:
         self._api_key = api_key
-        # Persistent client so concurrent lookup() calls reuse connections
-        # from the pool rather than opening a new TCP connection each time.
+        # Persistent HTTP client: keeps a connection pool alive across calls so
+        # concurrent lookup() calls (via run_in_executor) reuse sockets instead
+        # of opening a new TCP+TLS handshake each time. Under HTTP/1.1 each
+        # in-flight request owns one socket (1:1); under HTTP/2 multiple
+        # requests multiplex over a single socket. Either way, sockets are
+        # returned to the pool after each response and reused by the next call.
+        # Idle connections auto-close after keepalive_expiry (default 5 s); call
+        # close() explicitly when done to release file descriptors immediately.
         self._http = httpx.Client(timeout=10.0)
+
+    def close(self) -> None:
+        """Release the connection pool.
+
+        If not called, httpx auto-closes idle connections after keepalive_expiry
+        (default 5 s), so file descriptors are not held indefinitely — but
+        calling this explicitly is preferable in a long-running server process.
+        """
+        self._http.close()
 
     def lookup(self, maps_search: str) -> Optional[dict]:
         """Resolve a search string to a place dict, or None on no-match / error.

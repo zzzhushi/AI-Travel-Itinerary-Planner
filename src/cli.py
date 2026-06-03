@@ -87,9 +87,14 @@ def cmd_research(session, trip) -> None:
     from src.maps.places_client import places_client_from_env
     from src.services.trip_service import research_and_enrich
 
-    summaries, stats = asyncio.run(
-        research_and_enrich(session, trip, places_client_from_env())
-    )
+    client = places_client_from_env()
+    try:
+        summaries, stats = asyncio.run(
+            research_and_enrich(session, trip, client)
+        )
+    finally:
+        if client is not None:
+            client.close()
 
     if not summaries:
         console.print("[yellow]All activities have already been researched.[/yellow]")
