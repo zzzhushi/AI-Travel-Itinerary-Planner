@@ -320,9 +320,12 @@ async def update_trip_field(
     session.refresh(trip)
     field = next(iter(form.keys()), "name")
     value = getattr(trip, field, "") or ""
-    return templates.TemplateResponse(request, "trips/_field_display.html", {
+    resp = templates.TemplateResponse(request, "trips/_field_display.html", {
         "request": request, "trip": trip, "field": field, "value": value,
     })
+    if "num_days" in form:
+        resp.headers["HX-Trigger"] = "numDaysChanged"
+    return resp
 
 
 # ---------------------------------------------------------------------------

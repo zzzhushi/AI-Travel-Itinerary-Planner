@@ -63,6 +63,13 @@
   </div>
 </div>
 
+<!-- Reloads the schedule tab whenever num_days is saved -->
+<div hx-get="/trips/{{ trip.id }}/tabs/schedule"
+     hx-trigger="numDaysChanged from:body"
+     hx-target="#trip-tabs"
+     hx-swap="innerHTML"
+     style="display:none"></div>
+
 <!-- Tab bar + content (wrapped together so HTMX tab switches re-render the active highlight) -->
 <div id="trip-tabs">
   {% include "trips/_tabs_wrapper.html" %}
