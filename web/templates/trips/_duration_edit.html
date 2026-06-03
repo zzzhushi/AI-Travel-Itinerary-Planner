@@ -11,11 +11,6 @@
     step="15"
     value="{{ opt.default_duration_minutes if opt.default_duration_minutes is not none else effective_default }}"
     title="Visit duration in minutes"
-    class="w-16 border border-gray-200 rounded px-1.5 py-0.5 text-xs text-center focus:outline-none focus:ring-1 focus:ring-indigo-400
-      {% if opt.default_duration_minutes is none %}text-gray-400{% else %}text-gray-700{% endif %}">
-  <span class="text-xs text-gray-400">min
-    {% if opt.default_duration_minutes is none %}
-      <span class="italic">(default)</span>
-    {% endif %}
-  </span>
+    class="w-16 border border-gray-200 rounded px-1.5 py-0.5 text-xs text-center focus:outline-none focus:ring-1 focus:ring-indigo-400 text-gray-700">
+  <span class="text-xs text-gray-400">min</span>
 </form>
