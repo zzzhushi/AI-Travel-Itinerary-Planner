@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.agents.planner import DayPlan, ScheduleItem
+from src.agents.planner import DayPlan, PlanResult, ScheduleItem
 from src.db.queries import (
     add_activity,
     create_trip,
@@ -151,14 +151,12 @@ class TestGenerateAndSaveSchedule:
         day_plans = _make_day_plans(trip.id, [opts[0].id, opts[1].id])
 
         with patch("src.services.trip_service.generate_schedule", new_callable=AsyncMock) as m:
-            m.return_value = (day_plans, [], "")
-            result_plans, llm_days, warn = await generate_and_save_schedule(
-                session, trip, num_days=3
-            )
+            m.return_value = PlanResult(day_plans=day_plans, source="llm")
+            result = await generate_and_save_schedule(session, trip, num_days=3)
 
-        assert result_plans is day_plans
-        assert llm_days == []
-        assert warn == ""
+        assert result.day_plans is day_plans
+        assert result.source == "llm"
+        assert result.warning == ""
         # Verify schedule was saved to DB
         saved = get_schedule(session, trip.id)
         assert len(saved) == 2
@@ -171,13 +169,12 @@ class TestGenerateAndSaveSchedule:
         day_plans = _make_day_plans(trip.id, [opts[0].id])
 
         with patch("src.services.trip_service.generate_schedule", new_callable=AsyncMock) as m:
-            m.return_value = (day_plans, [], "LLM refinement skipped: timeout")
-            result_plans, llm_days, warn = await generate_and_save_schedule(
-                session, trip, num_days=2
-            )
+            m.return_value = PlanResult(day_plans=day_plans, source="deterministic",
+                                        warning="LLM refinement skipped: timeout")
+            result = await generate_and_save_schedule(session, trip, num_days=2)
 
-        assert result_plans is day_plans
-        assert "LLM refinement skipped" in warn
+        assert result.day_plans is day_plans
+        assert "LLM refinement skipped" in result.warning
         assert get_schedule(session, trip.id)  # schedule was still saved
 
     @pytest.mark.asyncio
@@ -187,13 +184,10 @@ class TestGenerateAndSaveSchedule:
         add_activity(session, trip.id, "ramen", "food", False)  # unrated
 
         with patch("src.services.trip_service.generate_schedule", new_callable=AsyncMock) as m:
-            result_plans, llm_days, warn = await generate_and_save_schedule(
-                session, trip, num_days=3
-            )
+            result = await generate_and_save_schedule(session, trip, num_days=3)
 
-        assert result_plans == []
-        assert llm_days == []
-        assert warn == ""
+        assert result.day_plans == []
+        assert result.warning == ""
         m.assert_not_called()
 
 

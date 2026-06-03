@@ -126,7 +126,7 @@ web/
 - **Idempotent research** — activities are hashed by `(trip_id, query)`; re-running won't create duplicate options
 - **Injectable providers** — agents take a `LLMProvider` at construction; `MockProvider` in tests means no API keys needed to run the test suite
 - **Service layer** — `src/services/trip_service.py` holds the business logic shared between the CLI and the coming web routes
-- **Two-phase scheduling** — deterministic Python round-robin first, then an optional Gemini pass that assigns real clock times, respects opening hours, and minimises geographic backtracking. The AI pass enforces a 09:00–21:00 day window: it fits as many high-priority items as realistically work and drops the rest rather than stacking items past the end of the day.
+- **Strategy-based scheduling** — two interchangeable planners behind a common interface: `DeterministicPlanner` (pure Python, always bounded to 09:00–21:00, drops lowest-rated overflow) and `LlmPlanner` (Gemini, assigns real clock times, respects opening hours, minimises geographic backtracking). The coordinator tries the LLM first and falls back to deterministic on any failure, so rate limits or API errors always produce a usable schedule.
 - **Locked items** — mark a scheduled item as locked to pin it to its day and clock time. The planner never moves or drops locked items, and the pin survives repeated regenerations.
 - **Day numbers vs dates** — the schedule uses `day_number` (1-based) until `start_date` is set on the trip
 
