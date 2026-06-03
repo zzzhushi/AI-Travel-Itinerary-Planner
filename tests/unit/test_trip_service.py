@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.agents.planner import DayPlan, PlanResult, ScheduleItem
+from src.workers.planner import DayPlan, PlanResult, ScheduleItem
 from src.db.queries import (
     add_activity,
     create_trip,

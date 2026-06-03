@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from src.agents.researcher import ResearcherAgent, _normalize
+from src.workers.researcher import ResearcherAgent, _normalize
 from tests.mocks.provider import MockProvider
 
 

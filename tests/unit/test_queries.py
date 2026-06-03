@@ -18,7 +18,7 @@ from src.db.queries import (
     set_rating,
     upsert_schedule,
 )
-from src.agents.planner import DayPlan, ScheduleItem
+from src.workers.planner import DayPlan, ScheduleItem
 
 
 def _make_trip(session, name="Test Trip", destination="Tokyo", num_days=3):
@@ -368,7 +368,7 @@ class TestDurationColumns:
         for opt in opts:
             from src.db.queries import set_rating
             set_rating(session, opt.id, 4)
-        from src.agents.planner import DayPlan, ScheduleItem
+        from src.workers.planner import DayPlan, ScheduleItem
         plans = [DayPlan(day_number=1, items=[
             ScheduleItem(option_id=opts[0].id, name="A", category="sightseeing",
                          latitude=None, longitude=None, user_rating=4,

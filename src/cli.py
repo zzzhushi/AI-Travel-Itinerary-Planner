@@ -107,7 +107,7 @@ def cmd_add_activities(session, trip) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_research(session, trip) -> None:
-    from src.maps.places_client import places_client_from_env
+    from src.clients.places_client import places_client_from_env
     from src.services.trip_service import research_and_enrich
 
     client = places_client_from_env()

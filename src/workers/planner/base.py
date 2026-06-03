@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Optional, Protocol
 
-from src.agents.planner.types import DayPlan
+from src.workers.planner.types import DayPlan
 
 
 @dataclass

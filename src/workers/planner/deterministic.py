@@ -14,8 +14,8 @@ from __future__ import annotations
 from datetime import date
 from typing import Optional
 
-from src.agents.planner.base import PlanResult
-from src.agents.planner.types import (
+from src.workers.planner.base import PlanResult
+from src.workers.planner.types import (
     DAY_END_MINUTES,
     DAY_START_MINUTES,
     ScheduleItem,

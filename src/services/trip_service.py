@@ -15,8 +15,8 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from src.agents.orchestrator import generate_schedule, research_batch
-from src.agents.planner import PlanResult
+from src.services.orchestrator import generate_schedule, research_batch
+from src.workers.planner import PlanResult
 from src.db.models import Trip
 from src.db.queries import (
     get_rated_options_for_schedule,
@@ -26,7 +26,7 @@ from src.db.queries import (
     save_options,
     upsert_schedule,
 )
-from src.maps.places_client import PlacesClient
+from src.clients.places_client import PlacesClient
 
 logger = logging.getLogger(__name__)
 
