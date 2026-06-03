@@ -12,10 +12,7 @@
   <div class="flex items-center gap-1 leading-tight overflow-hidden">
     <!-- Lock toggle -->
     <button
-      hx-patch="/trips/{{ trip_id }}/schedule/{{ item.id }}"
-      hx-vals='{"is_locked": "{{ "false" if item.is_locked else "true" }}"}'
-      hx-target="#schedule-item-{{ item.id }}"
-      hx-swap="outerHTML"
+      onclick="fetch('/trips/{{ trip_id }}/schedule/{{ item.id }}', {method:'PATCH', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:'is_locked={{ 'false' if item.is_locked else 'true' }}'}).then(() => htmx.ajax('GET', '/trips/{{ trip_id }}/tabs/schedule', {target:'#trip-tabs', swap:'innerHTML'}))"
       title="{{ 'Locked — click to unlock' if item.is_locked else 'Unlocked — click to lock' }}"
       class="flex-shrink-0 transition-colors
         {% if item.is_locked %}text-indigo-500 hover:text-indigo-700{% else %}text-gray-300 hover:text-gray-500{% endif %}">
