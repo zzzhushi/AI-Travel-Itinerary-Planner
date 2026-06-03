@@ -134,6 +134,10 @@ class Option(Base):
     longitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     # User rating 1–5 (null = unrated)
     user_rating: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # User-overridable typical visit length, in minutes. NULL = use the category
+    # default (category_default_duration); a non-NULL value is the user's override
+    # (edited in the UI). Per-placement overrides live on ScheduledItem.
+    default_duration_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     # Fields populated by Places API enrichment (all nullable — enrichment is best-effort)
     place_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     google_rating: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
@@ -170,6 +174,11 @@ class ScheduledItem(Base):
     day_number: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     # Time slot: "morning" | "afternoon" | "evening" | null
     time_slot: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    # Real clock placement: start time in minutes from midnight (0–1439).
+    start_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Per-placement duration override, in minutes. NULL = fall back to the
+    # option's default_duration_minutes, then the category default.
+    duration_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     # Locked items won't be moved by the planner or drag-drop
     is_locked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

@@ -38,8 +38,8 @@ web/                    # FastAPI web app (coming soon)
 
 - **Trip** — name, destination, num_days (nullable), start_date/end_date (nullable)
 - **Activity** — user's query (vague or specific), category, is_specific flag
-- **Option** — researched result: name, category, address, location, maps_link, lat/lng, user_rating (1–5). category comes from the researcher and is preferred over Activity.category when scheduling.
-- **ScheduledItem** — option placed on a day_number + time_slot, with is_locked flag
+- **Option** — researched result: name, category, address, location, maps_link, lat/lng, user_rating (1–5), default_duration_minutes (user-overridable; NULL = category default). category comes from the researcher and is preferred over Activity.category when scheduling.
+- **ScheduledItem** — option placed on a day_number + time_slot (+ start_minutes / duration_minutes for the timeline), with is_locked flag
 - **TripPreferences** — per-trip interests list, notes (for future travel style expansion)
 
 day_number is 1-based and nullable. When Trip.start_date is set, UI converts to real dates.
@@ -92,7 +92,7 @@ pytest
 
 - Ensure code comments are updated and unit tests are written for larger changes.
 - Use `Optional[str]` (not `str | None`) in SQLAlchemy `Mapped` columns — Python 3.14 compat.
-- Add new activity categories to `ACTIVITY_CATEGORIES` in `src/db/models.py` and `_CATEGORY_SLOT` in `src/agents/planner.py`.
+- Add new activity categories to `ACTIVITY_CATEGORIES` in `src/db/models.py`, `_CATEGORY_SLOT`, and `_CATEGORY_DURATION` in `src/agents/planner.py`.
 - New agents must accept a `LLMProvider` and follow the singleton pattern in `src/agents/orchestrator.py`.
 - Run `pytest tests/unit/` before merging — all unit tests must pass without `GOOGLE_API_KEY` or `DATABASE_URL`.
 - When adding or changing agent behaviour, update the corresponding test in `tests/unit/test_researcher_agent.py` or `test_planner_agent.py`.

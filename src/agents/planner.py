@@ -33,6 +33,31 @@ _CATEGORY_SLOT: dict[str, str] = {
     "other": "afternoon",
 }
 
+DAY_START_MINUTES = 540  # 09:00 — used by later phases for sequential time layout
+DEFAULT_DURATION_MINUTES = 60  # fallback when a category has no specific default
+
+# Typical visit length (minutes) by category. Seed defaults from issue #28; keep
+# in sync with ACTIVITY_CATEGORIES in src/db/models.py. Categories not listed here
+# (incl. future user-defined ones) fall back to DEFAULT_DURATION_MINUTES.
+_CATEGORY_DURATION: dict[str, int] = {
+    "food": 60,
+    "shopping": 60,
+    "sightseeing": 120,
+    "culture": 120,
+    "nature": 180,
+}
+
+
+def category_default_duration(category: Optional[str]) -> int:
+    """Typical visit length (minutes) for a category; falls back to DEFAULT_DURATION_MINUTES.
+
+    Accepts ANY category string (case-insensitive) — including future user-defined
+    categories — and falls back gracefully. This is the single lookup chokepoint, so a
+    later per-trip/user category->duration source can be consulted here before the
+    hardcoded seed map, without touching any call site.
+    """
+    return _CATEGORY_DURATION.get((category or "").lower(), DEFAULT_DURATION_MINUTES)
+
 PLANNER_INSTRUCTION = """You are a travel itinerary planner. Given a list of activities grouped by day, produce an optimized day-by-day schedule.
 
 Each item includes option_id, name, category, time_slot, and is_locked.

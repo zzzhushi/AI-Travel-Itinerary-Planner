@@ -6,11 +6,13 @@ No LLM calls, no mocking — all functions are deterministic.
 import pytest
 
 from src.agents.planner import (
+    DEFAULT_DURATION_MINUTES,
     DayPlan,
     ScheduleItem,
     _assign_time_slots,
     apply_llm_refinement,
     build_schedule,
+    category_default_duration,
 )
 
 
@@ -230,3 +232,24 @@ class TestApplyLlmRefinement:
         original = self._original([(1, 1, "morning", False)])
         llm_days = [{"items": [{"option_id": 1, "time_slot": "morning"}]}]  # no "day"
         assert apply_llm_refinement(llm_days, original) == []
+
+
+class TestCategoryDefaultDuration:
+    def test_mapped_categories_return_seed_values(self):
+        # Seed defaults from issue #28
+        assert category_default_duration("food") == 60
+        assert category_default_duration("shopping") == 60
+        assert category_default_duration("sightseeing") == 120
+        assert category_default_duration("culture") == 120
+        assert category_default_duration("nature") == 180
+
+    def test_is_case_insensitive(self):
+        assert category_default_duration("NATURE") == 180
+
+    def test_unmapped_category_falls_back(self):
+        # Categories not in the seed map (incl. future user-defined ones) fall back
+        assert category_default_duration("transport") == DEFAULT_DURATION_MINUTES
+        assert category_default_duration("breakfast") == DEFAULT_DURATION_MINUTES
+
+    def test_none_falls_back(self):
+        assert category_default_duration(None) == DEFAULT_DURATION_MINUTES
