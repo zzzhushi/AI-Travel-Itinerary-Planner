@@ -16,7 +16,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from src.agents.orchestrator import generate_schedule, research_batch
-from src.agents.planner import DayPlan
+from src.agents.planner import PlanResult
 from src.db.models import Trip
 from src.db.queries import (
     get_rated_options_for_schedule,
@@ -149,17 +149,17 @@ async def generate_and_save_schedule(
     trip: Trip,
     num_days: int,
     use_llm_refinement: bool = True,
-) -> tuple[list[DayPlan], list[dict], str]:
+) -> PlanResult:
     """Generate a schedule from rated options and persist it.
 
-    Returns (day_plans, llm_days, warning).
-    day_plans is always populated; llm_days is empty if refinement was skipped.
+    Returns a PlanResult with day_plans, source ("llm" | "deterministic"),
+    and any warning. Returns PlanResult([], "deterministic") when no options exist.
     """
     options = get_rated_options_for_schedule(session, trip.id)
     if not options:
-        return [], [], ""
+        return PlanResult(day_plans=[], source="deterministic")
 
-    day_plans, llm_days, warn = await generate_schedule(
+    result = await generate_schedule(
         destination=trip.destination,
         options=options,
         num_days=num_days,
@@ -168,5 +168,5 @@ async def generate_and_save_schedule(
         start_date=trip.start_date,
     )
 
-    upsert_schedule(session, trip.id, day_plans)
-    return day_plans, llm_days, warn
+    upsert_schedule(session, trip.id, result.day_plans)
+    return result

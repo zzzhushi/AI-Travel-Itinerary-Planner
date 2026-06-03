@@ -15,8 +15,13 @@ src/
       __init__.py       # re-exports LLMProvider, GeminiProvider
     base.py             # LlmAgent base class (holds a provider, delegates ask())
     researcher.py       # ResearcherAgent: research() + research_batch()
-    planner.py          # PlannerAgent: refine(); build_schedule() pure Python
-    orchestrator.py     # Thread-local singletons + public API: research(), research_batch(), generate_schedule()
+    planner/
+      types.py          # ScheduleItem, DayPlan, category_default_duration, DAY_* consts (shared)
+      base.py           # PlanResult dataclass + SchedulePlanner Protocol
+      deterministic.py  # DeterministicPlanner: build_schedule, _fit_day_within_window, _assign_start_times
+      llm.py            # LlmPlanner: refines a deterministic draft via Gemini; apply_llm_refinement
+      __init__.py       # Public re-exports only (DeterministicPlanner, LlmPlanner, PlanResult, SchedulePlanner, shared types)
+    orchestrator.py     # Thread-local singletons + coordinator: research(), research_batch(), generate_schedule() → PlanResult
   db/
     models.py           # SQLAlchemy ORM: Trip, Activity, Option, ScheduledItem, TripPreferences
     database.py         # Sync (CLI) and async (web) session factories
@@ -81,19 +86,20 @@ pytest
 ## Key Design Decisions
 
 - **Injectable providers**: Agents (`ResearcherAgent`, `PlannerAgent`) take a `LLMProvider` at construction. `GeminiProvider` is used in production; `MockProvider` (in `tests/mocks/`) is used in tests. No env vars needed for unit tests.
-- **Thread-local singletons**: `orchestrator.py` owns the production agent instances via `threading.local()`. Each thread (web background thread or CLI run) gets its own `ResearcherAgent`/`PlannerAgent` bound to its own event loop, preventing `RuntimeError("Event loop is closed")` on concurrent or repeated calls. Agent classes themselves hold no singleton state.
+- **Thread-local singletons**: `orchestrator.py` owns the production agent instances via `threading.local()`. Each thread (web background thread or CLI run) gets its own `LlmPlanner` bound to its own event loop, preventing `RuntimeError("Event loop is closed")` on concurrent or repeated calls. `DeterministicPlanner` is stateless and held as a plain module-level singleton.
+- **Strategy pattern for scheduling**: `DeterministicPlanner` and `LlmPlanner` both implement the `SchedulePlanner` Protocol (async `plan() → PlanResult`). `orchestrator.generate_schedule` is the coordinator: it tries `LlmPlanner` first, then falls back to `DeterministicPlanner` on any failure. Callers use `PlanResult.source` ("llm" | "deterministic") to know which ran.
 - **Service layer**: `src/services/trip_service.py` holds business logic shared between the CLI and the coming web routes. CLI functions call services; services call queries + orchestrator.
 - **Idempotent research**: `Activity.researched_at` is set by `mark_researched()` after a successful run. `get_unresearched_activities()` filters on `researched_at IS NULL`, so already-researched activities are never re-sent to the LLM.
-- **Two-phase planning**: deterministic Python round-robin schedule first, then optional Gemini LLM refinement pass that assigns real clock times, respects opening hours, and minimises geographic backtracking. `apply_llm_refinement` enforces a hard 09:00–21:00 day window: unlocked items that would start at/after `DAY_END_MINUTES` are dropped rather than appended, preventing unbounded day growth.
-- **Locked items**: `ScheduledItem.is_locked = True` pins an item to its day and `start_minutes`. The planner never moves or drops locked items — even if the LLM omits them, they are re-attached at their pinned time. The pinned `start_minutes` is plumbed from the DB through `get_rated_options_for_schedule` → `build_schedule` so it survives repeated regenerations.
+- **Day-window enforcement**: Both planners bound each day to 09:00–21:00. `DeterministicPlanner` drops lowest-rated overflow items that don't fit the window (`_fit_day_within_window`). `LlmPlanner` rejects unlocked items starting at/after `DAY_END_MINUTES` in `apply_llm_refinement`. Locked items are never dropped by either planner.
+- **Locked items**: `ScheduledItem.is_locked = True` pins an item to its day and `start_minutes`. The planner never moves or drops locked items — even if the LLM omits them, they are re-attached at their pinned time. The pinned `start_minutes` is plumbed from the DB through `get_rated_options_for_schedule` so it survives repeated regenerations.
 - **day_number vs real dates**: Schedule uses day_number (1-based) until Trip.start_date is provided.
 
 ## Do
 
 - Ensure code comments are updated and unit tests are written for larger changes.
 - Use `Optional[str]` (not `str | None`) in SQLAlchemy `Mapped` columns — Python 3.14 compat.
-- Add new activity categories to `ACTIVITY_CATEGORIES` in `src/db/models.py`, `_CATEGORY_ORDER`, and `_CATEGORY_DURATION` in `src/agents/planner.py`.
-- New agents must accept a `LLMProvider` and follow the singleton pattern in `src/agents/orchestrator.py`.
+- Add new activity categories to `ACTIVITY_CATEGORIES` in `src/db/models.py`, `_CATEGORY_ORDER`, and `_CATEGORY_DURATION` in `src/agents/planner/types.py`.
+- New planner strategies must implement the `SchedulePlanner` Protocol (async `plan() → PlanResult`) and be wired into the coordinator in `src/agents/orchestrator.py`. New LLM-backed agents must accept a `LLMProvider` and use thread-local storage.
 - Run `pytest tests/unit/` before merging — all unit tests must pass without `GOOGLE_API_KEY` or `DATABASE_URL`.
 - When adding or changing agent behaviour, update the corresponding test in `tests/unit/test_researcher_agent.py` or `test_planner_agent.py`.
 - New CLI commands or web routes that involve agents or DB writes should go through `src/services/trip_service.py`.

@@ -165,10 +165,10 @@ def _run_schedule_background(trip_id: int, num_days: int, use_llm: bool, job: _J
             trip = session.get(Trip, trip_id)
             if trip is None:
                 return
-            day_plans, llm_days, warn = asyncio.run(
+            result = asyncio.run(
                 generate_and_save_schedule(session, trip, num_days, use_llm)
             )
-        job.result = {"warn": warn}
+        job.result = {"warn": result.warning}
     except Exception as e:
         job.error = str(e)
     finally:

@@ -222,18 +222,18 @@ def cmd_generate(session, trip) -> None:
     )
     use_llm = prompt("Use AI to refine schedule ordering? [Y/n]", default="y").lower() != "n"
 
-    day_plans, llm_days, warn = _run(
+    result = _run(
         generate_and_save_schedule(session, trip, num_days, use_llm_refinement=use_llm)
     )
 
-    if warn:
-        console.print(f"[yellow]{warn}[/yellow]")
+    if result.warning:
+        console.print(f"[yellow]{result.warning}[/yellow]")
 
     console.print("[green]Schedule saved.[/green]\n")
 
-    header = "[bold green]AI-Refined Schedule[/bold green]" if (use_llm and llm_days) else "[bold green]Schedule[/bold green]"
+    header = "[bold green]AI-Refined Schedule[/bold green]" if result.source == "llm" else "[bold green]Schedule[/bold green]"
     console.print(Panel(header))
-    for dp in day_plans:
+    for dp in result.day_plans:
         console.print(f"[bold]Day {dp.day_number}[/bold]")
         for item in sorted(dp.items, key=lambda i: i.start_minutes or 0):
             dur = f"{item.duration_minutes}m" if item.duration_minutes else "?"

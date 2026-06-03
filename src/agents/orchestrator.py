@@ -1,8 +1,11 @@
 """
 Orchestrator: coordinates Researcher and Planner agents for a trip.
 
-For the CLI this is a thin coordinator. In the web app it will handle
-background tasks and state transitions.
+Implements the Strategy pattern for scheduling:
+- LlmPlanner is tried first when use_llm_refinement=True.
+- DeterministicPlanner is used as fallback (or exclusively when AI is off).
+
+Both planners return PlanResult; the coordinator owns the fallback chain.
 """
 
 from __future__ import annotations
@@ -12,7 +15,12 @@ from datetime import date
 from typing import Optional
 
 from src.agents.researcher import ResearcherAgent, RESEARCHER_INSTRUCTION
-from src.agents.planner import PlannerAgent, DayPlan, PLANNER_INSTRUCTION, build_schedule, apply_llm_refinement
+from src.agents.planner import (
+    DeterministicPlanner,
+    LlmPlanner,
+    PlanResult,
+    PLANNER_INSTRUCTION,
+)
 
 # Thread-local agent instances.
 #
@@ -24,6 +32,10 @@ from src.agents.planner import PlannerAgent, DayPlan, PLANNER_INSTRUCTION, build
 # closed"). Thread-local storage gives each thread its own instance, naturally
 # scoped to that thread's loop and garbage-collected when the thread exits.
 _local = threading.local()
+
+# DeterministicPlanner is stateless — a module-level singleton is safe and avoids
+# repeated construction without needing thread-local storage.
+_deterministic_planner = DeterministicPlanner()
 
 
 def _get_researcher() -> ResearcherAgent:
@@ -43,11 +55,11 @@ def _get_researcher() -> ResearcherAgent:
     return _local.researcher
 
 
-def _get_planner() -> PlannerAgent:
-    if not getattr(_local, "planner", None):
+def _get_llm_planner() -> LlmPlanner:
+    if not getattr(_local, "llm_planner", None):
         from src.agents.providers import GeminiProvider
 
-        _local.planner = PlannerAgent(
+        _local.llm_planner = LlmPlanner(
             GeminiProvider(
                 agent_name="PlannerAgent",
                 instruction=PLANNER_INSTRUCTION,
@@ -56,7 +68,7 @@ def _get_planner() -> PlannerAgent:
                 retry_exp_base=5,
             )
         )
-    return _local.planner
+    return _local.llm_planner
 
 
 async def research(
@@ -102,27 +114,26 @@ async def generate_schedule(
     use_llm_refinement: bool = True,
     min_rating: int = 3,
     start_date: Optional[date] = None,
-) -> tuple[list[DayPlan], list[dict], str]:
-    """
-    Generate a day-by-day schedule from rated options.
+) -> PlanResult:
+    """Generate a day-by-day schedule from rated options.
 
-    Returns (day_plans, llm_days, error).
-    day_plans: deterministic Python schedule (always available)
-    llm_days: LLM-refined version (may be empty if refinement fails or is skipped)
+    Tries the LlmPlanner first when use_llm_refinement=True. Falls back to
+    DeterministicPlanner if the LLM fails or produces an unusable schedule.
+    Always returns a bounded, valid schedule.
     """
-    day_plans = build_schedule(options, num_days=num_days, min_rating=min_rating)
-
-    llm_days: list[dict] = []
-    warn = ""
     if use_llm_refinement:
-        llm_days, err = await _get_planner().refine(day_plans, destination, start_date=start_date)
-        if err:
-            warn = f"LLM refinement skipped: {err}"
-        else:
-            refined = apply_llm_refinement(llm_days, day_plans, num_days)
-            if refined:
-                day_plans = refined
-            else:
-                warn = "LLM produced an unusable schedule; using deterministic fallback."
+        result = await _get_llm_planner().plan(
+            options, num_days,
+            destination=destination,
+            start_date=start_date,
+            min_rating=min_rating,
+        )
+        if result.day_plans:
+            return result
+        # LLM failed or unusable — fall back to deterministic, carry the warning.
+        llm_warning = result.warning
+        fallback = await _deterministic_planner.plan(options, num_days, min_rating=min_rating)
+        fallback.warning = llm_warning or "LLM produced an unusable schedule; using deterministic fallback."
+        return fallback
 
-    return day_plans, llm_days, warn
+    return await _deterministic_planner.plan(options, num_days, min_rating=min_rating)
