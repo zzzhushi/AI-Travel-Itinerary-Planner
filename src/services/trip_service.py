@@ -165,6 +165,7 @@ async def generate_and_save_schedule(
         num_days=num_days,
         use_llm_refinement=use_llm_refinement,
         min_rating=1,
+        start_date=trip.start_date,
     )
 
     upsert_schedule(session, trip.id, day_plans)

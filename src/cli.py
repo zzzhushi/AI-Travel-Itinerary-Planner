@@ -7,6 +7,21 @@ import os
 import sys
 from typing import Optional
 
+# Persistent event loop for the CLI session.
+# _run() creates and closes a new loop on every call. ADK's InMemoryRunner
+# binds its HTTP sessions to whichever loop was active when it was first awaited;
+# a new loop on the second call sees those sessions as belonging to a closed loop
+# and raises RuntimeError("Event loop is closed"). Reusing one loop avoids this.
+_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _run(coro):
+    global _loop
+    if _loop is None or _loop.is_closed():
+        _loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_loop)
+    return _loop.run_until_complete(coro)
+
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
@@ -97,7 +112,7 @@ def cmd_research(session, trip) -> None:
 
     client = places_client_from_env()
     try:
-        summaries, stats = asyncio.run(
+        summaries, stats = _run(
             research_and_enrich(session, trip, client)
         )
     finally:
@@ -207,7 +222,7 @@ def cmd_generate(session, trip) -> None:
     )
     use_llm = prompt("Use AI to refine schedule ordering? [Y/n]", default="y").lower() != "n"
 
-    day_plans, llm_days, warn = asyncio.run(
+    day_plans, llm_days, warn = _run(
         generate_and_save_schedule(session, trip, num_days, use_llm_refinement=use_llm)
     )
 

@@ -207,8 +207,12 @@ def get_rated_options_for_schedule(session: Session, trip_id: int) -> list[dict]
             "longitude": opt.longitude,
             "user_rating": opt.user_rating,
             "default_duration_minutes": opt.default_duration_minutes,
+            "opening_hours": opt.opening_hours,
             "is_locked": si.is_locked if si else False,
             "day_number": si.day_number if si else None,
+            # Existing placement time — lets build_schedule keep locked items
+            # pinned to the time the user set rather than re-laying them.
+            "start_minutes": si.start_minutes if si else None,
             "time_slot": si.time_slot if si else None,
         })
     return result

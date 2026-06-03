@@ -183,8 +183,8 @@ class TestGetRatedOptionsForSchedule:
         result = get_rated_options_for_schedule(session, trip.id)
         row = result[0]
         for key in ("option_id", "name", "category", "latitude", "longitude",
-                    "user_rating", "is_locked", "day_number", "time_slot",
-                    "default_duration_minutes"):
+                    "user_rating", "is_locked", "day_number", "start_minutes",
+                    "time_slot", "default_duration_minutes"):
             assert key in row, f"Missing key: {key}"
 
     def test_prefers_option_category_over_activity_category(self, session):
@@ -205,6 +205,22 @@ class TestGetRatedOptionsForSchedule:
         set_rating(session, opt.id, 4)
         result = get_rated_options_for_schedule(session, trip.id)
         assert result[0]["category"] == "culture"
+
+    def test_returns_existing_placement_start_minutes(self, session):
+        # A locked/placed option exposes its scheduled start_minutes so the
+        # planner can keep it pinned across a regenerate.
+        from src.db.models import ScheduledItem
+        trip = _make_trip(session)
+        act = _make_activity(session, trip)
+        [opt] = _make_options(session, act, n=1)
+        set_rating(session, opt.id, 4)
+        session.add(ScheduledItem(trip_id=trip.id, option_id=opt.id,
+                                  day_number=2, start_minutes=720, is_locked=True))
+        session.commit()
+        [row] = get_rated_options_for_schedule(session, trip.id)
+        assert row["start_minutes"] == 720
+        assert row["day_number"] == 2
+        assert row["is_locked"] is True
 
 
 class TestUpsertSchedule:

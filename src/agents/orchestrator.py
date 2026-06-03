@@ -7,23 +7,31 @@ background tasks and state transitions.
 
 from __future__ import annotations
 
+import threading
+from datetime import date
+from typing import Optional
 
 from src.agents.researcher import ResearcherAgent, RESEARCHER_INSTRUCTION
 from src.agents.planner import PlannerAgent, DayPlan, PLANNER_INSTRUCTION, build_schedule, apply_llm_refinement
 
-
-# Lazy singletons — constructed on first call so env vars are loaded before init.
-_researcher: ResearcherAgent | None = None
-_planner: PlannerAgent | None = None
+# Thread-local agent instances.
+#
+# The ADK InMemoryRunner binds its async resources to whichever event loop is
+# running when it is first awaited. In the web app each background thread calls
+# asyncio.run(), which creates and then closes its own event loop. Using a single
+# global singleton means the second thread's asyncio.run() gets a runner whose
+# resources belong to the first (now-closed) loop → RuntimeError("Event loop is
+# closed"). Thread-local storage gives each thread its own instance, naturally
+# scoped to that thread's loop and garbage-collected when the thread exits.
+_local = threading.local()
 
 
 def _get_researcher() -> ResearcherAgent:
-    global _researcher
-    if _researcher is None:
+    if not getattr(_local, "researcher", None):
         from google.adk.tools import google_search
         from src.agents.providers import GeminiProvider
 
-        _researcher = ResearcherAgent(
+        _local.researcher = ResearcherAgent(
             GeminiProvider(
                 agent_name="ResearcherAgent",
                 instruction=RESEARCHER_INSTRUCTION,
@@ -32,15 +40,14 @@ def _get_researcher() -> ResearcherAgent:
                 retry_exp_base=7,
             )
         )
-    return _researcher
+    return _local.researcher
 
 
 def _get_planner() -> PlannerAgent:
-    global _planner
-    if _planner is None:
+    if not getattr(_local, "planner", None):
         from src.agents.providers import GeminiProvider
 
-        _planner = PlannerAgent(
+        _local.planner = PlannerAgent(
             GeminiProvider(
                 agent_name="PlannerAgent",
                 instruction=PLANNER_INSTRUCTION,
@@ -49,7 +56,7 @@ def _get_planner() -> PlannerAgent:
                 retry_exp_base=5,
             )
         )
-    return _planner
+    return _local.planner
 
 
 async def research(
@@ -94,6 +101,7 @@ async def generate_schedule(
     num_days: int,
     use_llm_refinement: bool = True,
     min_rating: int = 3,
+    start_date: Optional[date] = None,
 ) -> tuple[list[DayPlan], list[dict], str]:
     """
     Generate a day-by-day schedule from rated options.
@@ -107,7 +115,7 @@ async def generate_schedule(
     llm_days: list[dict] = []
     warn = ""
     if use_llm_refinement:
-        llm_days, err = await _get_planner().refine(day_plans, destination)
+        llm_days, err = await _get_planner().refine(day_plans, destination, start_date=start_date)
         if err:
             warn = f"LLM refinement skipped: {err}"
         else:

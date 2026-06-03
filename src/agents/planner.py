@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from typing import Optional
 
 from src.agents.base import LlmAgent, _extract_json
@@ -60,16 +61,19 @@ def category_default_duration(category: Optional[str]) -> int:
     return _CATEGORY_DURATION.get((category or "").lower(), DEFAULT_DURATION_MINUTES)
 
 
-PLANNER_INSTRUCTION = """You are a travel itinerary planner. You will receive a draft schedule grouped by day. For each day, assign a realistic start_minutes (minutes from midnight, e.g. 540 = 09:00) to every item, fitting them within the day window (day_start: 540, day_end: 1260 = 21:00).
+PLANNER_INSTRUCTION = """You are a travel itinerary planner. You will receive a draft schedule grouped by day, with each day labelled by its actual date and day of week. For each day, assign a realistic start_minutes (minutes from midnight, e.g. 540 = 09:00) to every item, fitting them within the day window (day_start: 540, day_end: 1260 = 21:00).
 
-Each item includes option_id, name, category, duration_minutes (visit length in minutes), user_rating (1–5, higher = more important), current start_minutes, and is_locked.
+Each item includes option_id, name, category, duration_minutes (visit length in minutes), user_rating (1–5, higher = more important), current start_minutes, is_locked, and opening_hours (full weekly schedule from Google Places).
 
 Rules:
 - Schedule items back-to-back with roughly 10–15 minutes travel time between stops.
-- Prioritise higher-rated items (5 > 4 > 3). If all items don't fit in the day window, drop the lowest-rated ones (omit them from the response entirely).
+- Every item must start within the day window: never schedule an item to start at or after day_end (1260 = 21:00), and do not stack items past it.
+- Fit as many high-priority items as realistically fit within each day's window, and omit the rest — you do NOT need to place every item. Prioritise higher-rated items (5 > 4 > 3); when items don't fit, drop the lowest-rated ones (omit them from the response entirely).
 - Minimise backtracking: group geographically nearby items and order them so travel flows logically through neighbourhoods or districts.
-- Locked items (is_locked: true) must keep their current start_minutes unchanged.
-- Order items naturally by time of day: sightseeing/culture/nature early, food/shopping midday, nightlife/dinner in the evening — adjust only when geographic flow demands it.
+- Locked items (is_locked: true) must keep their current start_minutes and day unchanged.
+- Use opening_hours (full week) to schedule each item on a day when it is actually open. If an item is on a day it is closed, move it to any other day in the schedule when it is open. Only drop an item if it is closed on every available day or cannot otherwise fit. Do not place an item outside its open hours for the day it is scheduled.
+- If opening_hours is null or unknown, schedule normally without restriction.
+- Order items naturally by time of day: sightseeing/culture/nature early, food/shopping midday, nightlife/dinner in the evening — adjust when geographic flow or opening hours demand it.
 
 Respond with a JSON array of days, each with:
 - "day": integer (1-based)
@@ -92,6 +96,7 @@ class ScheduleItem:
     start_minutes: Optional[int] = None   # clock placement set by planner
     duration_minutes: Optional[int] = None
     note: Optional[str] = None            # LLM placement rationale
+    opening_hours: Optional[str] = None  # raw Places API hours string
 
 
 @dataclass
@@ -140,10 +145,15 @@ def build_schedule(
             is_locked=o.get("is_locked", False),
             day_number=o.get("day_number"),
             time_slot=None,
+            # Carry the existing placement time so locked items keep their pinned
+            # start. _assign_start_times leaves locked items with a start_minutes
+            # in place; non-locked items are re-laid regardless.
+            start_minutes=o.get("start_minutes"),
             duration_minutes=(
                 o.get("default_duration_minutes")
                 or category_default_duration(o.get("category"))
             ),
+            opening_hours=o.get("opening_hours"),
         )
         for o in options
     ]
@@ -195,18 +205,28 @@ def apply_llm_refinement(
     invent or change item metadata.
 
     Time assignment priority per item:
-      - Locked items: always keep their original start_minutes (the user pinned them).
+      - Locked items: always keep their original start_minutes (the user pinned
+        them). They are never moved, never window-capped, and never dropped.
       - Unlocked items: use the LLM's start_minutes if it's a valid int 0–1439;
         otherwise fall forward sequentially from the previous item's end time
         so the LLM's *ordering* still drives placement even when times are missing.
+
+    Day-window enforcement:
+      - Unlocked items whose start would be at or after DAY_END_MINUTES (21:00)
+        are dropped. This is the safety net for an LLM that over-packs a day or
+        omits times: without it the sequential fallback clock climbs unbounded and
+        produces absurd, multi-day-long "days". Dropping unlocked overflow matches
+        the LLM's own job of fitting as many high-priority items as realistically
+        fit and omitting the rest.
 
     Safety guarantees:
       - Hallucinated option_ids (not in original) are silently ignored.
       - Duplicate option_ids in LLM output are ignored after the first occurrence.
       - A day number outside 1..num_days causes the entire output to be rejected
         (returns []) so the caller can fall back to the deterministic schedule.
-      - Items the LLM omitted entirely are re-appended at the end of their
-        original day as overflow, preserving all rated options in the schedule.
+      - Locked items the LLM omitted are re-attached to their original day at their
+        pinned time, so a user-pinned item is never lost. Unlocked omissions stay
+        dropped (the LLM's intentional "doesn't fit" decision).
 
     Returns [] on empty or malformed input — caller should use the deterministic
     schedule as a fallback.
@@ -245,21 +265,19 @@ def apply_llm_refinement(
         for item_dict in day_dict.get("items", []):
             opt_id = item_dict.get("option_id")
             orig = originals.get(opt_id)
-            # Skip hallucinated option_ids and any item seen on an earlier day.
+            # Skip hallucinated option_ids and any item already placed.
             if orig is None or opt_id in seen_ids:
                 continue
-            seen_ids.add(opt_id)
 
-            raw_start = item_dict.get("start_minutes")
-            valid_start = isinstance(raw_start, int) and 0 <= raw_start <= 1439
             # Duration comes from the original item; the LLM doesn't change it.
             duration = orig.duration_minutes or category_default_duration(orig.category)
             note = item_dict.get("note") or None
 
             if orig.is_locked:
-                # Locked items are user-pinned anchors. The LLM can order
-                # around them but cannot move their time.
+                # Locked items are user-pinned anchors: the LLM may order around
+                # them but cannot move their time, and they are never dropped.
                 start = orig.start_minutes if orig.start_minutes is not None else current_time
+                seen_ids.add(opt_id)
                 dp.items.append(ScheduleItem(
                     option_id=orig.option_id, name=orig.name,
                     category=orig.category, latitude=orig.latitude,
@@ -269,38 +287,97 @@ def apply_llm_refinement(
                     duration_minutes=orig.duration_minutes,
                     note=note,
                 ))
-            else:
-                # Use the LLM's time when valid; fall forward to current_time otherwise.
-                start = raw_start if valid_start else current_time
-                dp.items.append(ScheduleItem(
-                    option_id=orig.option_id, name=orig.name,
-                    category=orig.category, latitude=orig.latitude,
-                    longitude=orig.longitude, user_rating=orig.user_rating,
-                    is_locked=False, day_number=day_num,
-                    start_minutes=start,
-                    duration_minutes=orig.duration_minutes,
-                    note=note,
-                ))
+                # Keep the fallback clock monotonic so a later untimed item lands
+                # after this anchor rather than before it.
+                current_time = max(current_time, start + duration)
+                continue
 
+            # Unlocked: use the LLM's time when valid; fall forward to current_time
+            # otherwise, so the LLM's ordering still drives placement.
+            raw_start = item_dict.get("start_minutes")
+            valid_start = isinstance(raw_start, int) and 0 <= raw_start <= 1439
+            start = raw_start if valid_start else current_time
+
+            # Hard day-window cap: an item that would begin at/after the day end
+            # cannot happen. Drop it (the LLM over-packed this day) instead of
+            # appending and letting the day balloon past DAY_END_MINUTES. We don't
+            # mark it seen, so the LLM may still place it on another day.
+            if start >= DAY_END_MINUTES:
+                continue
+
+            seen_ids.add(opt_id)
+            dp.items.append(ScheduleItem(
+                option_id=orig.option_id, name=orig.name,
+                category=orig.category, latitude=orig.latitude,
+                longitude=orig.longitude, user_rating=orig.user_rating,
+                is_locked=False, day_number=day_num,
+                start_minutes=start,
+                duration_minutes=orig.duration_minutes,
+                note=note,
+            ))
             # Advance the clock past this item's end so the next item without
             # a valid time starts immediately after.
             current_time = start + duration
 
         result.append(dp)
 
-    # Items the LLM omitted are intentionally excluded — the LLM drops
-    # lower-priority items that don't fit within the day window. Forcing
-    # them back in would create days longer than DAY_END_MINUTES and undo
-    # the LLM's packing decision. Dropped items remain unscheduled until
-    # the user regenerates or manually places them.
+    # Locked items the LLM omitted entirely must still survive — they are
+    # user-pinned and must never be dropped. Re-attach each missing locked item
+    # to its original day at its pinned time. (Unlocked omissions stay dropped:
+    # the LLM intentionally drops lower-priority items that don't fit the window.)
+    result_by_day: dict[int, DayPlan] = {dp.day_number: dp for dp in result}
+    for orig in originals.values():
+        if not orig.is_locked or orig.option_id in seen_ids:
+            continue
+        day = orig.day_number if (orig.day_number and 1 <= orig.day_number <= num_days) else 1
+        dp = result_by_day.get(day)
+        if dp is None:
+            dp = DayPlan(day_number=day)
+            result_by_day[day] = dp
+            result.append(dp)
+        seen_ids.add(orig.option_id)
+        dp.items.append(ScheduleItem(
+            option_id=orig.option_id, name=orig.name,
+            category=orig.category, latitude=orig.latitude,
+            longitude=orig.longitude, user_rating=orig.user_rating,
+            is_locked=True, day_number=day,
+            start_minutes=orig.start_minutes if orig.start_minutes is not None else DAY_START_MINUTES,
+            duration_minutes=orig.duration_minutes,
+            note=None,
+        ))
+
+    # Render each day in time order (None start_minutes sorts last).
+    for dp in result:
+        dp.items.sort(key=lambda i: i.start_minutes if i.start_minutes is not None else 9999)
 
     return sorted(result, key=lambda d: d.day_number)
 
 
-def _build_refine_prompt(day_plans: list[DayPlan], destination: str) -> str:
+def _day_label(day_number: int, start_date: Optional[date]) -> str:
+    """Return a human-readable label for a day number.
+
+    If start_date is known, returns the real date and day-of-week (e.g.
+    "Day 1 — Saturday, Jun 07"). Otherwise assumes Day 1 falls on a Saturday
+    (a common travel day) so the LLM still has a concrete weekday to check
+    opening hours against.
+    """
+    if start_date is not None:
+        day_date = start_date + timedelta(days=day_number - 1)
+        return f"Day {day_number} — {day_date.strftime('%A, %b %d')}"
+    # No trip start date set: anchor Day 1 to Saturday so hours are meaningful.
+    day_names = ["Saturday", "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+    return f"Day {day_number} — {day_names[(day_number - 1) % 7]} (assumed)"
+
+
+def _build_refine_prompt(
+    day_plans: list[DayPlan],
+    destination: str,
+    start_date: Optional[date] = None,
+) -> str:
     input_data = [
         {
             "day": dp.day_number,
+            "date": _day_label(dp.day_number, start_date),
             "items": [
                 {
                     "option_id": i.option_id,
@@ -310,6 +387,7 @@ def _build_refine_prompt(day_plans: list[DayPlan], destination: str) -> str:
                     "user_rating": i.user_rating,
                     "start_minutes": i.start_minutes,
                     "is_locked": i.is_locked,
+                    "opening_hours": i.opening_hours,
                 }
                 for i in dp.items
             ],
@@ -320,9 +398,11 @@ def _build_refine_prompt(day_plans: list[DayPlan], destination: str) -> str:
         f"Destination: {destination}\n"
         f"Day window: {DAY_START_MINUTES} (09:00) – {DAY_END_MINUTES} (21:00)\n\n"
         f"Draft schedule:\n{json.dumps(input_data, indent=2)}\n\n"
-        f"Assign realistic start_minutes to each item, fitting within the day window. "
-        f"Prioritise higher-rated items and minimise geographic backtracking. "
-        f"Add a brief note for each item explaining the placement logic."
+        f"Each item's opening_hours is the full weekly schedule from Google Places. "
+        f"Use it to verify the item is open on its scheduled day, and move it to a "
+        f"different day if it is closed — only drop it if it is closed on every day. "
+        f"Prioritise higher-rated items, minimise geographic backtracking, and "
+        f"add a brief note per item explaining the placement."
     )
 
 
@@ -334,8 +414,9 @@ class PlannerAgent(LlmAgent):
         self,
         day_plans: list[DayPlan],
         destination: str,
+        start_date: Optional[date] = None,
     ) -> tuple[list[dict], str]:
-        prompt = _build_refine_prompt(day_plans, destination)
+        prompt = _build_refine_prompt(day_plans, destination, start_date)
         text, err = await self.ask(prompt)
         if err:
             return [], err.replace("Agent error", "Planner agent error")
