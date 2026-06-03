@@ -578,8 +578,11 @@ async def update_schedule_item(
         # in the JS (no interact.js on locked elements) and here server-side.
         if "day_number" in form:
             raw = str(form["day_number"])
-            if raw.isdigit():
-                item.day_number = int(raw)
+            if raw.isdigit() and int(raw) >= 1:
+                trip = session.get(Trip, trip_id)
+                num_days = trip.num_days if trip else None
+                day = int(raw)
+                item.day_number = max(1, min(day, num_days)) if num_days else day
         if "start_minutes" in form:
             raw = str(form["start_minutes"])
             if raw.lstrip("-").isdigit():
