@@ -62,6 +62,20 @@ templates.env.filters["hhmm"] = _hhmm
 # Timeline window: 07:00–23:00 at 1 px/min = 960 px tall per day column.
 templates.env.globals["TIMELINE_START"] = 420   # 07:00
 templates.env.globals["TIMELINE_END"] = 1380    # 23:00
+_TIMELINE_START = 420  # mirrors the Jinja global; used in route code
+
+
+def _item_position(item: ScheduledItem) -> tuple[int, int]:
+    """Return (item_top_px, item_height_px) for the timeline render."""
+    from src.agents.planner import DEFAULT_DURATION_MINUTES, category_default_duration
+    start = item.start_minutes if item.start_minutes is not None else 540
+    opt = item.option
+    eff_dur = (item.duration_minutes
+               or (opt.default_duration_minutes if opt else None)
+               or category_default_duration(opt.category if opt else None)
+               or DEFAULT_DURATION_MINUTES)
+    return max(start - _TIMELINE_START, 0), max(eff_dur, 20)
+
 
 # ---------------------------------------------------------------------------
 # In-memory job state (research + schedule generation per trip)
@@ -525,9 +539,8 @@ def schedule_status(request: Request, trip_id: int, session: Session = Depends(g
     days: dict[int, list] = {}
     for si in schedule:
         days.setdefault(si.day_number, []).append(si)
-    slot_order = {"morning": 0, "afternoon": 1, "evening": 2}
     for items in days.values():
-        items.sort(key=lambda x: slot_order.get(x.time_slot or "", 3))
+        items.sort(key=lambda x: x.start_minutes if x.start_minutes is not None else 9999)
     ctx = _trip_context(session, trip, schedule=schedule)
     warn = job.result.get("warn", "") if job.result else ""
     error = job.error
@@ -559,12 +572,25 @@ async def update_schedule_item(
         item.is_locked = str(form["is_locked"]).lower() in ("true", "1", "on")
     if "time_slot" in form:
         item.time_slot = str(form["time_slot"])
-    if "day_number" in form:
-        raw = str(form["day_number"])
-        if raw.isdigit():
-            item.day_number = int(raw)
+    if not item.is_locked:
+        # Movement fields are ignored for locked items — lock is enforced both
+        # in the JS (no interact.js on locked elements) and here server-side.
+        if "day_number" in form:
+            raw = str(form["day_number"])
+            if raw.isdigit():
+                item.day_number = int(raw)
+        if "start_minutes" in form:
+            raw = str(form["start_minutes"])
+            if raw.lstrip("-").isdigit():
+                item.start_minutes = min(max(int(raw), 0), 1439)
+        if "duration_minutes" in form:
+            raw = str(form["duration_minutes"])
+            if raw.isdigit() and int(raw) >= 1:
+                item.duration_minutes = min(int(raw), 1440)
     session.commit()
     session.refresh(item)
+    item_top, item_height = _item_position(item)
     return templates.TemplateResponse(request, "trips/_schedule_item.html", {
         "request": request, "trip_id": trip_id, "item": item,
+        "item_top": item_top, "item_height": item_height,
     })

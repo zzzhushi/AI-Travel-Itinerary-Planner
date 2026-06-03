@@ -376,3 +376,90 @@ def test_set_duration_wrong_trip_returns_404(client, db_factory):
     r = client.patch(f"/trips/{trip_b}/options/{opt_id}/duration",
                      data={"duration_minutes": "60"})
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Schedule item drag / resize (P4)
+# ---------------------------------------------------------------------------
+
+def _make_scheduled_item(db_factory, trip_id, start_minutes=540, locked=False):
+    """Create an activity + option + scheduled item; return (opt_id, si_id)."""
+    from src.db.models import ScheduledItem
+    with db_factory() as s:
+        act = add_activity(s, trip_id, "ramen", "food", False)
+        [opt] = save_options(s, act.id, [{"name": "Ichiran"}])
+        set_rating(s, opt.id, 4)
+        si = ScheduledItem(trip_id=trip_id, option_id=opt.id,
+                           day_number=1, time_slot="morning",
+                           start_minutes=start_minutes, is_locked=locked)
+        s.add(si)
+        s.commit()
+        return opt.id, si.id
+
+
+def test_patch_start_minutes_persists(client, db_factory):
+    trip_id = _make_trip(db_factory)
+    _, si_id = _make_scheduled_item(db_factory, trip_id, start_minutes=540)
+    r = client.patch(f"/trips/{trip_id}/schedule/{si_id}",
+                     data={"start_minutes": "660"})
+    assert r.status_code == 200
+    from src.db.models import ScheduledItem
+    with db_factory() as s:
+        si = s.get(ScheduledItem, si_id)
+        assert si.start_minutes == 660
+
+
+def test_patch_start_minutes_clamped_to_valid_range(client, db_factory):
+    trip_id = _make_trip(db_factory)
+    _, si_id = _make_scheduled_item(db_factory, trip_id)
+    # Above max → clamped to 1439
+    client.patch(f"/trips/{trip_id}/schedule/{si_id}", data={"start_minutes": "9999"})
+    from src.db.models import ScheduledItem
+    with db_factory() as s:
+        assert s.get(ScheduledItem, si_id).start_minutes == 1439
+    # Below min → clamped to 0
+    client.patch(f"/trips/{trip_id}/schedule/{si_id}", data={"start_minutes": "-100"})
+    with db_factory() as s:
+        assert s.get(ScheduledItem, si_id).start_minutes == 0
+
+
+def test_patch_duration_minutes_persists(client, db_factory):
+    trip_id = _make_trip(db_factory)
+    _, si_id = _make_scheduled_item(db_factory, trip_id)
+    r = client.patch(f"/trips/{trip_id}/schedule/{si_id}",
+                     data={"duration_minutes": "90"})
+    assert r.status_code == 200
+    from src.db.models import ScheduledItem
+    with db_factory() as s:
+        assert s.get(ScheduledItem, si_id).duration_minutes == 90
+
+
+def test_patch_duration_minutes_capped_at_1440(client, db_factory):
+    trip_id = _make_trip(db_factory)
+    _, si_id = _make_scheduled_item(db_factory, trip_id)
+    client.patch(f"/trips/{trip_id}/schedule/{si_id}", data={"duration_minutes": "9999"})
+    from src.db.models import ScheduledItem
+    with db_factory() as s:
+        assert s.get(ScheduledItem, si_id).duration_minutes == 1440
+
+
+def test_locked_item_ignores_movement_fields(client, db_factory):
+    # Server must ignore start_minutes/duration_minutes/day_number for locked items.
+    trip_id = _make_trip(db_factory)
+    _, si_id = _make_scheduled_item(db_factory, trip_id, start_minutes=540, locked=True)
+    r = client.patch(f"/trips/{trip_id}/schedule/{si_id}",
+                     data={"start_minutes": "900", "duration_minutes": "120", "day_number": "3"})
+    assert r.status_code == 200
+    from src.db.models import ScheduledItem
+    with db_factory() as s:
+        si = s.get(ScheduledItem, si_id)
+        assert si.start_minutes == 540   # unchanged
+        assert si.duration_minutes is None  # unchanged
+        assert si.day_number == 1           # unchanged
+
+
+def test_patch_schedule_item_missing_returns_404(client, db_factory):
+    trip_id = _make_trip(db_factory)
+    r = client.patch(f"/trips/{trip_id}/schedule/99999",
+                     data={"start_minutes": "600"})
+    assert r.status_code == 404
