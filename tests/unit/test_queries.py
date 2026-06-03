@@ -14,6 +14,7 @@ from src.db.queries import (
     get_unresearched_activities,
     mark_researched,
     save_options,
+    set_option_duration,
     set_rating,
     upsert_schedule,
 )
@@ -324,3 +325,20 @@ class TestDurationColumns:
         [si] = get_schedule(session, trip.id)
         assert si.start_minutes == 540
         assert si.duration_minutes == 120
+
+    def test_set_option_duration_sets_override(self, session):
+        trip = _make_trip(session)
+        act = _make_activity(session, trip)
+        [opt] = _make_options(session, act, n=1)
+        set_option_duration(session, opt.id, 90)
+        session.refresh(opt)
+        assert opt.default_duration_minutes == 90
+
+    def test_set_option_duration_none_clears_override(self, session):
+        trip = _make_trip(session)
+        act = _make_activity(session, trip)
+        [opt] = _make_options(session, act, n=1)
+        set_option_duration(session, opt.id, 90)
+        set_option_duration(session, opt.id, None)
+        session.refresh(opt)
+        assert opt.default_duration_minutes is None

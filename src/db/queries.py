@@ -177,6 +177,14 @@ def set_rating(session: Session, option_id: int, rating: Optional[int]) -> None:
         session.commit()
 
 
+def set_option_duration(session: Session, option_id: int, minutes: Optional[int]) -> None:
+    """Set the per-option duration override. Pass None to revert to the category default."""
+    opt = session.get(Option, option_id)
+    if opt:
+        opt.default_duration_minutes = minutes
+        session.commit()
+
+
 def get_rated_options_for_schedule(session: Session, trip_id: int) -> list[dict]:
     """Return options formatted for build_schedule(). Only options with a rating."""
     rows = (

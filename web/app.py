@@ -24,6 +24,7 @@ from src.db.queries import (
     get_trips,
     get_unrated_count,
     get_unresearched_count,
+    set_option_duration,
     set_rating,
 )
 from src.maps.places_client import places_client_from_env
@@ -47,6 +48,9 @@ def _safe_from_json(s: str) -> list:
         return []
 
 templates.env.filters["from_json"] = _safe_from_json
+
+from src.agents.planner import category_default_duration  # noqa: E402
+templates.env.globals["category_default_duration"] = category_default_duration
 
 # ---------------------------------------------------------------------------
 # In-memory job state (research + schedule generation per trip)
@@ -440,6 +444,31 @@ async def rate_option(
     session.refresh(opt)
     return templates.TemplateResponse(request, "trips/_star_rating.html", {
         "request": request, "trip_id": trip_id, "opt": opt,
+    })
+
+
+@app.patch("/trips/{trip_id}/options/{opt_id}/duration", response_class=HTMLResponse)
+async def set_duration(
+    request: Request,
+    trip_id: int,
+    opt_id: int,
+    session: Session = Depends(get_db),
+):
+    form = await request.form()
+    opt = session.get(Option, opt_id)
+    if not opt or opt.activity.trip_id != trip_id:
+        return HTMLResponse("", status_code=404)
+    raw = str(form.get("duration_minutes", "")).strip()
+    if raw.isdigit() and int(raw) >= 1:
+        minutes: Optional[int] = min(int(raw), 1440)
+    else:
+        minutes = None  # blank or invalid → revert to category default
+    set_option_duration(session, opt_id, minutes)
+    session.refresh(opt)
+    effective_default = category_default_duration(opt.category or opt.activity.category)
+    return templates.TemplateResponse(request, "trips/_duration_edit.html", {
+        "request": request, "trip_id": trip_id, "opt": opt,
+        "effective_default": effective_default,
     })
 
 

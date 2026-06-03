@@ -290,3 +290,89 @@ def test_schedule_flow_completes(client, db_factory, monkeypatch):
     done = client.get(f"/trips/{trip_id}/schedule/status")
     assert done.status_code == 200
     assert 'id="schedule-status"' not in done.text  # replaced by tab content
+
+
+# ---------------------------------------------------------------------------
+# Option duration (P2)
+# ---------------------------------------------------------------------------
+
+def test_set_duration_persists(client, db_factory):
+    trip_id = _make_trip(db_factory)
+    with db_factory() as s:
+        act = add_activity(s, trip_id, "ramen", "food", False)
+        [opt] = save_options(s, act.id, [{"name": "Ichiran"}])
+        opt_id = opt.id
+    r = client.patch(f"/trips/{trip_id}/options/{opt_id}/duration",
+                     data={"duration_minutes": "90"})
+    assert r.status_code == 200
+    with db_factory() as s:
+        from src.db.models import Option
+        o = s.get(Option, opt_id)
+        assert o.default_duration_minutes == 90
+
+
+def test_set_duration_blank_reverts_to_none(client, db_factory):
+    trip_id = _make_trip(db_factory)
+    with db_factory() as s:
+        act = add_activity(s, trip_id, "ramen", "food", False)
+        [opt] = save_options(s, act.id, [{"name": "Ichiran"}])
+        opt_id = opt.id
+    # Set then clear
+    client.patch(f"/trips/{trip_id}/options/{opt_id}/duration",
+                 data={"duration_minutes": "60"})
+    r = client.patch(f"/trips/{trip_id}/options/{opt_id}/duration",
+                     data={"duration_minutes": ""})
+    assert r.status_code == 200
+    with db_factory() as s:
+        from src.db.models import Option
+        o = s.get(Option, opt_id)
+        assert o.default_duration_minutes is None
+
+
+def test_set_duration_zero_reverts_to_none(client, db_factory):
+    trip_id = _make_trip(db_factory)
+    with db_factory() as s:
+        act = add_activity(s, trip_id, "ramen", "food", False)
+        [opt] = save_options(s, act.id, [{"name": "Ichiran"}])
+        opt_id = opt.id
+    r = client.patch(f"/trips/{trip_id}/options/{opt_id}/duration",
+                     data={"duration_minutes": "0"})
+    assert r.status_code == 200
+    with db_factory() as s:
+        from src.db.models import Option
+        o = s.get(Option, opt_id)
+        assert o.default_duration_minutes is None
+
+
+def test_set_duration_caps_at_1440(client, db_factory):
+    trip_id = _make_trip(db_factory)
+    with db_factory() as s:
+        act = add_activity(s, trip_id, "ramen", "food", False)
+        [opt] = save_options(s, act.id, [{"name": "Ichiran"}])
+        opt_id = opt.id
+    r = client.patch(f"/trips/{trip_id}/options/{opt_id}/duration",
+                     data={"duration_minutes": "9999"})
+    assert r.status_code == 200
+    with db_factory() as s:
+        from src.db.models import Option
+        o = s.get(Option, opt_id)
+        assert o.default_duration_minutes == 1440
+
+
+def test_set_duration_missing_option_returns_404(client, db_factory):
+    trip_id = _make_trip(db_factory)
+    r = client.patch(f"/trips/{trip_id}/options/99999/duration",
+                     data={"duration_minutes": "60"})
+    assert r.status_code == 404
+
+
+def test_set_duration_wrong_trip_returns_404(client, db_factory):
+    trip_a = _make_trip(db_factory, name="A")
+    trip_b = _make_trip(db_factory, name="B")
+    with db_factory() as s:
+        act = add_activity(s, trip_a, "ramen", "food", False)
+        [opt] = save_options(s, act.id, [{"name": "Ichiran"}])
+        opt_id = opt.id
+    r = client.patch(f"/trips/{trip_b}/options/{opt_id}/duration",
+                     data={"duration_minutes": "60"})
+    assert r.status_code == 404
