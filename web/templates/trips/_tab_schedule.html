@@ -146,12 +146,38 @@
   // can miss dynamically swapped HTMX content.
   // -------------------------------------------------------------------------
   const container = document.getElementById('schedule-timeline');
-  if (!container || !window.interact) return;
+  if (!container) return;
 
   const tripId  = container.dataset.tripId;
   const numDays = parseInt(container.dataset.numDays);
 
+  function showPatchError(msg) {
+    const existing = document.getElementById('schedule-patch-error');
+    if (existing) existing.remove();
+    const div = document.createElement('div');
+    div.id = 'schedule-patch-error';
+    div.className = 'mb-4 p-3 rounded-lg bg-red-50 text-red-700 text-sm flex items-center justify-between';
+    div.innerHTML = `<span>${msg}</span><button onclick="this.parentElement.remove()" class="ml-3 font-bold leading-none">✕</button>`;
+    container.insertAdjacentElement('beforebegin', div);
+  }
+
+  // Exposed on window so the lock-toggle onclick in _schedule_item.html can reuse it.
+  window.schedulePatch = function(itemId, body) {
+    fetch(`/trips/${tripId}/schedule/${itemId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    })
+      .then(res => {
+        if (!res.ok) { showPatchError('Could not save — please try again.'); return; }
+        htmx.ajax('GET', `/trips/${tripId}/tabs/schedule`, { target: '#trip-tabs', swap: 'innerHTML' });
+      })
+      .catch(() => showPatchError('Network error — please try again.'));
+  };
+
   fixOverlaps(container);
+
+  if (!window.interact) return;
 
   container.querySelectorAll('.schedule-item').forEach(el => {
     const handle = el.querySelector('.resize-handle');
@@ -187,12 +213,7 @@
             const origDay  = parseInt(t.dataset.dayNum);
             const newDay   = Math.max(1, Math.min(numDays, origDay + dayDelta));
 
-            fetch(`/trips/${tripId}/schedule/${t.dataset.itemId}`, {
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-              body: `start_minutes=${newStart}&day_number=${newDay}`
-            }).then(() => htmx.ajax('GET', `/trips/${tripId}/tabs/schedule`,
-                                    { target: '#trip-tabs', swap: 'innerHTML' }));
+            schedulePatch(t.dataset.itemId, `start_minutes=${newStart}&day_number=${newDay}`);
           }
         }
       })
@@ -208,12 +229,7 @@
             const t = e.target;
             let dur = Math.round(e.rect.height / SNAP) * SNAP;
             dur = Math.max(15, Math.min(1440, dur));
-            fetch(`/trips/${tripId}/schedule/${t.dataset.itemId}`, {
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-              body: `duration_minutes=${dur}`
-            }).then(() => htmx.ajax('GET', `/trips/${tripId}/tabs/schedule`,
-                                    { target: '#trip-tabs', swap: 'innerHTML' }));
+            schedulePatch(t.dataset.itemId, `duration_minutes=${dur}`);
           }
         }
       });
