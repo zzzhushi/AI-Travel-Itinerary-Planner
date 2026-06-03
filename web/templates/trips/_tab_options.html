@@ -42,6 +42,9 @@
             {% if opt.google_rating %}
             <span class="text-xs text-gray-400 whitespace-nowrap">G: {{ "%.1f"|format(opt.google_rating) }} ★</span>
             {% endif %}
+            {% with trip_id=trip.id, effective_default=category_default_duration(opt.category or act.category) %}
+              {% include "trips/_duration_edit.html" %}
+            {% endwith %}
             {% with trip_id=trip.id %}
               {% include "trips/_star_rating.html" %}
             {% endwith %}
