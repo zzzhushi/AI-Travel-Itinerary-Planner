@@ -296,3 +296,31 @@ class TestUpsertSchedule:
         option_ids = {si.option_id for si in get_schedule(session, trip.id)}
         assert opts[0].id in option_ids  # locked item preserved
         assert opts[1].id in option_ids  # free item inserted
+
+
+class TestDurationColumns:
+    """P1 schema smoke: the new timeline/duration columns persist round-trip."""
+
+    def test_option_default_duration_persists(self, session):
+        trip = _make_trip(session)
+        act = _make_activity(session, trip)
+        [opt] = _make_options(session, act, n=1)
+        opt.default_duration_minutes = 90
+        session.commit()
+        session.refresh(opt)
+        assert opt.default_duration_minutes == 90
+
+    def test_scheduled_item_time_columns_persist(self, session):
+        from src.db.models import ScheduledItem
+        from src.db.queries import get_schedule
+        trip = _make_trip(session)
+        act = _make_activity(session, trip)
+        [opt] = _make_options(session, act, n=1)
+        session.add(ScheduledItem(
+            trip_id=trip.id, option_id=opt.id, day_number=1,
+            start_minutes=540, duration_minutes=120,
+        ))
+        session.commit()
+        [si] = get_schedule(session, trip.id)
+        assert si.start_minutes == 540
+        assert si.duration_minutes == 120
