@@ -61,6 +61,29 @@ async def research_activities(session: Session, trip: Trip) -> list[dict]:
     return summaries
 
 
+async def research_and_enrich(
+    session: Session,
+    trip: Trip,
+    places_client: Optional[PlacesClient] = None,
+) -> tuple[list[dict], dict]:
+    """Research unresearched activities, then best-effort enrich the new options.
+
+    `research_activities` commits its results before enrichment runs, so a
+    Places failure never discards the research output. When `places_client`
+    is None, enrichment is skipped.
+
+    Returns (research_summaries, enrichment_stats).
+    """
+    summaries = await research_activities(session, trip)
+    stats = {"enriched": 0, "skipped": 0, "failed": 0}
+    if places_client is not None:
+        try:
+            stats = await enrich_options_with_places(session, trip, places_client)
+        except Exception:
+            logger.warning("Places enrichment failed for trip %s", trip.id, exc_info=True)
+    return summaries, stats
+
+
 async def enrich_options_with_places(
     session: Session,
     trip: Trip,

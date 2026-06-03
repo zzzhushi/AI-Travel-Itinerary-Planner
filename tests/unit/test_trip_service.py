@@ -19,7 +19,12 @@ from src.db.queries import (
     save_options,
     set_rating,
 )
-from src.services.trip_service import generate_and_save_schedule, research_activities
+from src.services.trip_service import (
+    generate_and_save_schedule,
+    research_activities,
+    research_and_enrich,
+)
+from tests.mocks.places_client import MockPlacesClient
 
 
 # ---------------------------------------------------------------------------
@@ -190,3 +195,47 @@ class TestGenerateAndSaveSchedule:
         assert llm_days == []
         assert warn == ""
         m.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# research_and_enrich
+# ---------------------------------------------------------------------------
+
+class TestResearchAndEnrich:
+    @pytest.mark.asyncio
+    async def test_no_client_skips_enrichment(self, session):
+        # Without a Places client, research runs but enrichment is skipped.
+        trip = create_trip(session, "Test", "Tokyo", 3)
+        summary = [{"query": "ramen", "options_saved": 1, "error": ""}]
+        with patch("src.services.trip_service.research_activities", new_callable=AsyncMock) as r, \
+             patch("src.services.trip_service.enrich_options_with_places", new_callable=AsyncMock) as e:
+            r.return_value = summary
+            summaries, stats = await research_and_enrich(session, trip, None)
+        assert summaries == summary
+        assert stats == {"enriched": 0, "skipped": 0, "failed": 0}
+        e.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_with_client_runs_enrichment(self, session):
+        # With a Places client, enrichment runs and its stats are returned.
+        trip = create_trip(session, "Test", "Tokyo", 3)
+        with patch("src.services.trip_service.research_activities", new_callable=AsyncMock) as r, \
+             patch("src.services.trip_service.enrich_options_with_places", new_callable=AsyncMock) as e:
+            r.return_value = []
+            e.return_value = {"enriched": 2, "skipped": 0, "failed": 1}
+            summaries, stats = await research_and_enrich(session, trip, MockPlacesClient())
+        e.assert_awaited_once()
+        assert stats == {"enriched": 2, "skipped": 0, "failed": 1}
+
+    @pytest.mark.asyncio
+    async def test_enrichment_failure_preserves_research(self, session):
+        # A Places failure must not discard research results (best-effort enrichment).
+        trip = create_trip(session, "Test", "Tokyo", 3)
+        summary = [{"query": "ramen", "options_saved": 1, "error": ""}]
+        with patch("src.services.trip_service.research_activities", new_callable=AsyncMock) as r, \
+             patch("src.services.trip_service.enrich_options_with_places", new_callable=AsyncMock) as e:
+            r.return_value = summary
+            e.side_effect = RuntimeError("places boom")
+            summaries, stats = await research_and_enrich(session, trip, MockPlacesClient())
+        assert summaries == summary
+        assert stats == {"enriched": 0, "skipped": 0, "failed": 0}
