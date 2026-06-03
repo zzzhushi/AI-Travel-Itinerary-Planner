@@ -42,8 +42,9 @@
       Day {{ day_num }}
     </div>
 
-    <!-- Timeline column -->
-    <div class="relative bg-white border border-gray-200 border-t-0 rounded-b-lg overflow-hidden"
+    <!-- Timeline column — no overflow-hidden so items remain visible during
+         cross-column drag and the bottom-edge resize handle is reachable. -->
+    <div class="relative bg-white border border-gray-200 border-t-0 rounded-b-lg"
          style="height: {{ window_px }}px;">
 
       <!-- Hour gridlines -->
@@ -79,11 +80,66 @@
   const SNAP  = 15;       // snap to 15-min grid
   const COL_W = 176 + 8;  // w-44 (176px) + mr-2 (8px gap)
 
+  // ---------------------------------------------------------------------------
+  // Overlap layout — shift items sharing the same time into side-by-side tracks
+  // ---------------------------------------------------------------------------
+  function fixOverlaps(container) {
+    container.querySelectorAll('[data-day-num]').forEach(dayCol => {
+      const timelineDiv = dayCol.querySelector('.relative');
+      if (!timelineDiv) return;
+
+      const items = Array.from(timelineDiv.querySelectorAll('[data-item-id]'))
+        .sort((a, b) => (parseInt(a.dataset.startMinutes) || 540)
+                      - (parseInt(b.dataset.startMinutes) || 540));
+
+      if (items.length === 0) return;
+
+      // Assign each item to the first track whose last item has already ended.
+      const trackEnds = [];  // end-time (minutes) of last item in each track
+      const assignments = new Map();
+
+      items.forEach(item => {
+        const start  = parseInt(item.dataset.startMinutes) || 540;
+        const height = parseInt(item.style.height) || 60;
+        const end    = start + height; // 1px == 1min so height ≈ duration
+        let ti = trackEnds.findIndex(tEnd => tEnd <= start);
+        if (ti === -1) ti = trackEnds.length;
+        trackEnds[ti] = end;
+        assignments.set(item, ti);
+      });
+
+      const numTracks = Math.max(trackEnds.length, 1);
+      if (numTracks === 1) return;  // no overlaps — leave original layout intact
+
+      const colW   = timelineDiv.offsetWidth;
+      const trackW = Math.floor(colW / numTracks);
+
+      items.forEach(item => {
+        const ti = assignments.get(item) || 0;
+        item.style.left  = (ti * trackW + 1) + 'px';
+        item.style.right = 'auto';
+        item.style.width = (trackW - 2) + 'px';
+      });
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Drag & resize via interact.js
+  // ---------------------------------------------------------------------------
   const container = document.getElementById('schedule-timeline');
   if (!container || !window.interact) return;
 
   const tripId  = container.dataset.tripId;
   const numDays = parseInt(container.dataset.numDays);
+
+  // Fix overlaps on initial render, then after every HTMX swap that
+  // replaces the tab (the script re-executes, but we also listen for swaps
+  // that don't re-execute this script, e.g. the lock-toggle partial swap).
+  fixOverlaps(container);
+  document.addEventListener('htmx:afterSwap', () => {
+    const c = document.getElementById('schedule-timeline');
+    if (c) fixOverlaps(c);
+  }, { once: false });
 
   interact('.schedule-draggable').draggable({
     listeners: {
@@ -95,26 +151,26 @@
         t.dataset.dragX = x;
         t.dataset.dragY = y;
         t.style.opacity = '0.75';
-        t.style.zIndex  = '10';
+        t.style.zIndex  = '20';
       },
       end(e) {
         const t   = e.target;
         const dy  = parseFloat(t.dataset.dragY) || 0;
         const dx  = parseFloat(t.dataset.dragX) || 0;
-        // Reset visual transform
         t.style.transform = '';
         t.style.opacity   = '';
         t.style.zIndex    = '';
         t.dataset.dragX   = 0;
         t.dataset.dragY   = 0;
-        // Compute new values
+
         const origStart = parseInt(t.dataset.startMinutes);
         let newStart = Math.round((origStart + dy / SCALE) / SNAP) * SNAP;
         newStart = Math.max(420, Math.min(1380, newStart));
+
         const dayDelta = Math.round(dx / COL_W);
         const origDay  = parseInt(t.dataset.dayNum);
         const newDay   = Math.max(1, Math.min(numDays, origDay + dayDelta));
-        // Persist + refresh tab
+
         fetch(`/trips/${tripId}/schedule/${t.dataset.itemId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
