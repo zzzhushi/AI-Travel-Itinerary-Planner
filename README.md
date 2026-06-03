@@ -69,7 +69,7 @@ The dashboard has three tabs:
 |---|---|
 | **Activities** | Add activities by typing a query (e.g. "ramen in Shinjuku"). Set a category and mark it as specific if you want a particular place. Edit or delete existing activities. Click **Research** to fetch 4–5 real options per activity via Gemini + Google Search. |
 | **Options** | Review the researched options grouped by activity. Rate each option 1–5 stars — only options rated ≥ 3 are included in the schedule. |
-| **Schedule** | Click **Generate schedule** to distribute rated options across days. Toggle **Use AI** to enable the Gemini refinement pass (better geographic ordering + notes). Each scheduled item shows its day, time slot, and an optional AI note. You can lock an item (padlock icon) to pin it in place, or edit its time slot and day number inline. |
+| **Schedule** | Click **Generate schedule** to distribute rated options across days. Toggle **Use AI** to enable the Gemini refinement pass (assigns real clock times, respects opening hours, minimises geographic backtracking). Each scheduled item shows its day, start time, and an optional AI note. You can lock an item (padlock icon) to pin it to its current day and time — locked items survive repeated regenerations unchanged. |
 
 ## CLI walkthrough
 
@@ -126,8 +126,8 @@ web/
 - **Idempotent research** — activities are hashed by `(trip_id, query)`; re-running won't create duplicate options
 - **Injectable providers** — agents take a `LLMProvider` at construction; `MockProvider` in tests means no API keys needed to run the test suite
 - **Service layer** — `src/services/trip_service.py` holds the business logic shared between the CLI and the coming web routes
-- **Two-phase scheduling** — deterministic Python round-robin first, then an optional Gemini pass for human-readable ordering and notes
-- **Locked items** — mark a scheduled item as locked and the planner (and later the drag-drop UI) will never move it
+- **Two-phase scheduling** — deterministic Python round-robin first, then an optional Gemini pass that assigns real clock times, respects opening hours, and minimises geographic backtracking. The AI pass enforces a 09:00–21:00 day window: it fits as many high-priority items as realistically work and drops the rest rather than stacking items past the end of the day.
+- **Locked items** — mark a scheduled item as locked to pin it to its day and clock time. The planner never moves or drops locked items, and the pin survives repeated regenerations.
 - **Day numbers vs dates** — the schedule uses `day_number` (1-based) until `start_date` is set on the trip
 
 ## Running tests
@@ -142,5 +142,4 @@ pytest               # all tests
 - Geo clustering — group nearby activities onto the same day
 - User and activity preferences — travel style, pace, duration hints
 - Budget tracking
-- Opening hours awareness
 - Drag-drop calendar in the web UI

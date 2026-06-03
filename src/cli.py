@@ -7,6 +7,21 @@ import os
 import sys
 from typing import Optional
 
+# Persistent event loop for the CLI session.
+# _run() creates and closes a new loop on every call. ADK's InMemoryRunner
+# binds its HTTP sessions to whichever loop was active when it was first awaited;
+# a new loop on the second call sees those sessions as belonging to a closed loop
+# and raises RuntimeError("Event loop is closed"). Reusing one loop avoids this.
+_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _run(coro):
+    global _loop
+    if _loop is None or _loop.is_closed():
+        _loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_loop)
+    return _loop.run_until_complete(coro)
+
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
@@ -29,6 +44,14 @@ def prompt(text: str, default: str = "") -> str:
         console.print("\n[yellow]Interrupted.[/yellow]")
         sys.exit(0)
     return val or default
+
+
+def _hhmm(minutes: Optional[int]) -> str:
+    """Format minutes-from-midnight as HH:MM (e.g. 540 → '09:00')."""
+    if minutes is None:
+        return "??:??"
+    h, m = divmod(minutes, 60)
+    return f"{h:02d}:{m:02d}"
 
 
 def prompt_int(
@@ -89,7 +112,7 @@ def cmd_research(session, trip) -> None:
 
     client = places_client_from_env()
     try:
-        summaries, stats = asyncio.run(
+        summaries, stats = _run(
             research_and_enrich(session, trip, client)
         )
     finally:
@@ -199,7 +222,7 @@ def cmd_generate(session, trip) -> None:
     )
     use_llm = prompt("Use AI to refine schedule ordering? [Y/n]", default="y").lower() != "n"
 
-    day_plans, llm_days, warn = asyncio.run(
+    day_plans, llm_days, warn = _run(
         generate_and_save_schedule(session, trip, num_days, use_llm_refinement=use_llm)
     )
 
@@ -208,25 +231,18 @@ def cmd_generate(session, trip) -> None:
 
     console.print("[green]Schedule saved.[/green]\n")
 
-    if llm_days:
-        console.print(Panel("[bold green]AI-Refined Schedule[/bold green]"))
-        for day in llm_days:
-            console.print(f"[bold]Day {day['day']}[/bold]")
-            for item in day.get("items", []):
-                slot = item.get("time_slot", "anytime")
-                note = item.get("note", "")
-                line = f"  [{slot:9}] {item['name']}"
-                if note:
-                    line += f"  — {note}"
-                console.print(line)
-            console.print()
-    else:
-        console.print(Panel("[bold green]Schedule[/bold green]"))
-        for dp in day_plans:
-            console.print(f"[bold]Day {dp.day_number}[/bold]")
-            for item in dp.items:
-                console.print(f"  [{item.time_slot or 'anytime':9}] {item.name}")
-            console.print()
+    header = "[bold green]AI-Refined Schedule[/bold green]" if (use_llm and llm_days) else "[bold green]Schedule[/bold green]"
+    console.print(Panel(header))
+    for dp in day_plans:
+        console.print(f"[bold]Day {dp.day_number}[/bold]")
+        for item in sorted(dp.items, key=lambda i: i.start_minutes or 0):
+            dur = f"{item.duration_minutes}m" if item.duration_minutes else "?"
+            locked = " [yellow][locked][/yellow]" if item.is_locked else ""
+            line = f"  [{_hhmm(item.start_minutes)}] {item.name}  ({dur}){locked}"
+            if item.note:
+                line += f"  [dim]— {item.note}[/dim]"
+            console.print(line)
+        console.print()
 
 
 # ---------------------------------------------------------------------------
@@ -264,14 +280,13 @@ def cmd_view_trip(session, trip) -> None:
         by_day: dict[int, list] = {}
         for si in items:
             by_day.setdefault(si.day_number or 0, []).append(si)
-        slot_order = {"morning": 0, "afternoon": 1, "evening": 2}
         for day_num in sorted(by_day):
             label = f"Day {day_num}" if day_num else "Unscheduled"
             console.print(f"\n  [bold]{label}[/bold]")
-            day_items = sorted(by_day[day_num], key=lambda s: slot_order.get(s.time_slot or "", 1))
-            for si in day_items:
+            for si in by_day[day_num]:  # already ordered by start_minutes via get_schedule
+                dur = f"  ({si.duration_minutes}m)" if si.duration_minutes else ""
                 locked = " [yellow][locked][/yellow]" if si.is_locked else ""
-                console.print(f"    [{si.time_slot or 'anytime':9}] {si.option.name}{locked}")
+                console.print(f"    [{_hhmm(si.start_minutes)}] {si.option.name}{dur}{locked}")
     else:
         console.print("\n[dim]No itinerary generated yet.[/dim]")
 

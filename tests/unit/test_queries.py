@@ -183,7 +183,8 @@ class TestGetRatedOptionsForSchedule:
         result = get_rated_options_for_schedule(session, trip.id)
         row = result[0]
         for key in ("option_id", "name", "category", "latitude", "longitude",
-                    "user_rating", "is_locked", "day_number", "time_slot"):
+                    "user_rating", "is_locked", "day_number", "start_minutes",
+                    "time_slot", "default_duration_minutes"):
             assert key in row, f"Missing key: {key}"
 
     def test_prefers_option_category_over_activity_category(self, session):
@@ -204,6 +205,22 @@ class TestGetRatedOptionsForSchedule:
         set_rating(session, opt.id, 4)
         result = get_rated_options_for_schedule(session, trip.id)
         assert result[0]["category"] == "culture"
+
+    def test_returns_existing_placement_start_minutes(self, session):
+        # A locked/placed option exposes its scheduled start_minutes so the
+        # planner can keep it pinned across a regenerate.
+        from src.db.models import ScheduledItem
+        trip = _make_trip(session)
+        act = _make_activity(session, trip)
+        [opt] = _make_options(session, act, n=1)
+        set_rating(session, opt.id, 4)
+        session.add(ScheduledItem(trip_id=trip.id, option_id=opt.id,
+                                  day_number=2, start_minutes=720, is_locked=True))
+        session.commit()
+        [row] = get_rated_options_for_schedule(session, trip.id)
+        assert row["start_minutes"] == 720
+        assert row["day_number"] == 2
+        assert row["is_locked"] is True
 
 
 class TestUpsertSchedule:
@@ -343,8 +360,8 @@ class TestDurationColumns:
         session.refresh(opt)
         assert opt.default_duration_minutes is None
 
-    def test_upsert_schedule_sets_start_minutes_from_slot(self, session):
-        # upsert_schedule derives start_minutes from the item's time_slot anchor
+    def test_upsert_schedule_persists_start_minutes_from_item(self, session):
+        # P5: upsert_schedule writes start_minutes directly from ScheduleItem, not from time_slot
         trip = _make_trip(session)
         act = _make_activity(session, trip)
         opts = _make_options(session, act, n=3)
@@ -355,20 +372,22 @@ class TestDurationColumns:
         plans = [DayPlan(day_number=1, items=[
             ScheduleItem(option_id=opts[0].id, name="A", category="sightseeing",
                          latitude=None, longitude=None, user_rating=4,
-                         day_number=1, time_slot="morning"),
+                         day_number=1, start_minutes=540, duration_minutes=120),
             ScheduleItem(option_id=opts[1].id, name="B", category="food",
                          latitude=None, longitude=None, user_rating=4,
-                         day_number=1, time_slot="afternoon"),
+                         day_number=1, start_minutes=660, duration_minutes=60),
             ScheduleItem(option_id=opts[2].id, name="C", category="nightlife",
                          latitude=None, longitude=None, user_rating=4,
-                         day_number=1, time_slot="evening"),
+                         day_number=1, start_minutes=1080, duration_minutes=90),
         ])]
         upsert_schedule(session, trip.id, plans)
         from src.db.queries import get_schedule
-        scheduled = {si.option_id: si.start_minutes for si in get_schedule(session, trip.id)}
-        assert scheduled[opts[0].id] == 540   # morning → 09:00
-        assert scheduled[opts[1].id] == 780   # afternoon → 13:00
-        assert scheduled[opts[2].id] == 1080  # evening → 18:00
+        scheduled = {si.option_id: si for si in get_schedule(session, trip.id)}
+        assert scheduled[opts[0].id].start_minutes == 540
+        assert scheduled[opts[0].id].duration_minutes == 120
+        assert scheduled[opts[1].id].start_minutes == 660
+        assert scheduled[opts[2].id].start_minutes == 1080
+        assert scheduled[opts[2].id].duration_minutes == 90
 
     def test_get_schedule_orders_by_start_minutes(self, session):
         # Items should come back ordered by start_minutes, not time_slot string

@@ -6,10 +6,12 @@ No LLM calls, no mocking — all functions are deterministic.
 import pytest
 
 from src.agents.planner import (
+    DAY_END_MINUTES,
+    DAY_START_MINUTES,
     DEFAULT_DURATION_MINUTES,
     DayPlan,
     ScheduleItem,
-    _assign_time_slots,
+    _assign_start_times,
     apply_llm_refinement,
     build_schedule,
     category_default_duration,
@@ -17,7 +19,8 @@ from src.agents.planner import (
 
 
 def _opt(option_id: int, name: str, rating: int = 4, category: str = "sightseeing",
-         locked: bool = False, day_number: int = None) -> dict:
+         locked: bool = False, day_number: int = None,
+         default_duration_minutes: int = None, start_minutes: int = None) -> dict:
     """Helper to build an option dict for build_schedule()."""
     return {
         "option_id": option_id,
@@ -28,12 +31,13 @@ def _opt(option_id: int, name: str, rating: int = 4, category: str = "sightseein
         "user_rating": rating,
         "is_locked": locked,
         "day_number": day_number,
+        "start_minutes": start_minutes,
+        "default_duration_minutes": default_duration_minutes,
     }
 
 
 class TestBuildSchedule:
     def test_distributes_options_across_days(self):
-        # Input: 6 options, 3 days → each day should have roughly 2 items
         options = [_opt(i, f"Place {i}") for i in range(6)]
         plans = build_schedule(options, num_days=3)
         assert len(plans) == 3
@@ -41,7 +45,6 @@ class TestBuildSchedule:
         assert total == 6
 
     def test_filters_below_min_rating(self):
-        # Input: 3 options rated 5, 3, 1 with min_rating=3 → only 2 should appear
         options = [
             _opt(1, "Great", rating=5),
             _opt(2, "OK", rating=3),
@@ -52,7 +55,6 @@ class TestBuildSchedule:
         assert total == 2
 
     def test_preserves_locked_items_on_their_day(self):
-        # Input: one locked item pinned to day 1 → must remain on day 1 after scheduling
         options = [
             _opt(1, "Locked Spot", rating=5, locked=True, day_number=1),
             _opt(2, "Free Spot", rating=4),
@@ -62,14 +64,24 @@ class TestBuildSchedule:
         locked_ids = [i.option_id for i in day1.items if i.is_locked]
         assert 1 in locked_ids
 
+    def test_locked_item_keeps_its_pinned_start_minutes(self):
+        # A locked item carrying an existing start_minutes must NOT be re-laid to
+        # a fresh sequential time — its pinned time flows through unchanged.
+        options = [
+            _opt(1, "Pinned Lunch", locked=True, day_number=1, start_minutes=720),
+            _opt(2, "Free Spot", rating=4),
+        ]
+        plans = build_schedule(options, num_days=2)
+        day1 = next(p for p in plans if p.day_number == 1)
+        locked = next(i for i in day1.items if i.option_id == 1)
+        assert locked.start_minutes == 720
+
     def test_empty_options_returns_empty_days(self):
-        # Input: no options → each DayPlan exists but has 0 items
         plans = build_schedule([], num_days=3)
         assert len(plans) == 3
         assert all(len(p.items) == 0 for p in plans)
 
     def test_more_days_than_options(self):
-        # Input: 2 options, 5 days → total items still equals 2, rest of days are empty
         options = [_opt(1, "A"), _opt(2, "B")]
         plans = build_schedule(options, num_days=5)
         total = sum(len(p.items) for p in plans)
@@ -77,166 +89,270 @@ class TestBuildSchedule:
         assert len(plans) == 5
 
     def test_days_are_sorted_by_day_number(self):
-        # Output DayPlans should be sorted 1, 2, 3, ...
         options = [_opt(i, f"P{i}") for i in range(4)]
         plans = build_schedule(options, num_days=4)
         day_numbers = [p.day_number for p in plans]
         assert day_numbers == sorted(day_numbers)
 
-    def test_all_items_get_time_slots(self):
-        # Every scheduled item should have a non-None time_slot after build_schedule
+    def test_all_items_get_start_minutes(self):
+        # Every scheduled item should have a non-None start_minutes after build_schedule
         options = [_opt(i, f"P{i}", category=cat) for i, cat in
                    enumerate(["food", "sightseeing", "nightlife", "culture"])]
         plans = build_schedule(options, num_days=2)
         for plan in plans:
             for item in plan.items:
-                assert item.time_slot in ("morning", "afternoon", "evening")
+                assert item.start_minutes is not None
 
     def test_round_robin_distribution(self):
-        # 6 items across 3 days → 2 items per day (round-robin)
         options = [_opt(i, f"P{i}") for i in range(6)]
         plans = build_schedule(options, num_days=3)
         assert all(len(p.items) == 2 for p in plans)
 
+    def test_uses_default_duration_minutes_from_option(self):
+        # When the option carries a user-set duration, build_schedule propagates it
+        options = [_opt(1, "Long Tour", category="sightseeing", default_duration_minutes=240)]
+        plans = build_schedule(options, num_days=1)
+        item = plans[0].items[0]
+        assert item.duration_minutes == 240
 
-class TestAssignTimeSlots:
-    def _make_day(self, categories: list[str]) -> DayPlan:
+    def test_falls_back_to_category_duration_when_none(self):
+        # No default_duration_minutes → category default is used
+        options = [_opt(1, "Nature Walk", category="nature")]
+        plans = build_schedule(options, num_days=1)
+        item = plans[0].items[0]
+        assert item.duration_minutes == category_default_duration("nature")
+
+    def test_time_slot_is_none(self):
+        # P5: time_slot is soft-retired from the planning path
+        options = [_opt(1, "Shrine", category="culture")]
+        plans = build_schedule(options, num_days=1)
+        assert plans[0].items[0].time_slot is None
+
+
+class TestAssignStartTimes:
+    def _make_day(self, categories: list[str],
+                  durations: list[int] = None) -> DayPlan:
+        durations = durations or [None] * len(categories)
         items = [
             ScheduleItem(option_id=i, name=f"Item {i}", category=cat,
-                         latitude=None, longitude=None, user_rating=4)
-            for i, cat in enumerate(categories)
+                         latitude=None, longitude=None, user_rating=4,
+                         duration_minutes=dur)
+            for i, (cat, dur) in enumerate(zip(categories, durations))
         ]
         return DayPlan(day_number=1, items=items)
 
-    def test_food_gets_afternoon(self):
-        # food category → preferred slot is afternoon
-        day = self._make_day(["food"])
-        _assign_time_slots(day)
-        assert day.items[0].time_slot == "afternoon"
-
-    def test_nightlife_gets_evening(self):
-        # nightlife category → preferred slot is evening
-        day = self._make_day(["nightlife"])
-        _assign_time_slots(day)
-        assert day.items[0].time_slot == "evening"
-
-    def test_sightseeing_gets_morning(self):
-        # sightseeing category → preferred slot is morning
+    def test_first_item_starts_at_day_start(self):
         day = self._make_day(["sightseeing"])
-        _assign_time_slots(day)
-        assert day.items[0].time_slot == "morning"
+        _assign_start_times(day)
+        assert day.items[0].start_minutes == DAY_START_MINUTES
 
-    def test_overflow_moves_to_next_slot(self):
-        # 3 food items: first 2 get afternoon, 3rd overflows to evening
-        day = self._make_day(["food", "food", "food"])
-        _assign_time_slots(day)
-        slots = [item.time_slot for item in day.items]
-        assert slots.count("afternoon") == 2
-        assert slots.count("evening") == 1
+    def test_sequential_times_use_duration(self):
+        # Two items with known durations → second starts after first ends
+        day = self._make_day(["sightseeing", "food"], durations=[120, 60])
+        _assign_start_times(day)
+        items = sorted(day.items, key=lambda i: i.start_minutes)
+        assert items[0].start_minutes == DAY_START_MINUTES
+        assert items[1].start_minutes == DAY_START_MINUTES + 120
 
-    def test_locked_time_slot_is_preserved(self):
-        # Locked items with an existing time_slot are never reassigned
-        item = ScheduleItem(option_id=1, name="Fixed", category="food",
-                            latitude=None, longitude=None, user_rating=5,
-                            is_locked=True, time_slot="morning")
-        day = DayPlan(day_number=1, items=[item])
-        _assign_time_slots(day)
-        assert day.items[0].time_slot == "morning"
+    def test_category_order_sightseeing_before_food_before_nightlife(self):
+        # Items must be sorted: sightseeing(0) → food(1) → nightlife(2)
+        day = self._make_day(["nightlife", "food", "sightseeing"])
+        _assign_start_times(day)
+        ordered = sorted(day.items, key=lambda i: i.start_minutes)
+        cats = [i.category for i in ordered]
+        assert cats.index("sightseeing") < cats.index("food")
+        assert cats.index("food") < cats.index("nightlife")
 
+    def test_locked_item_with_start_minutes_is_not_moved(self):
+        # Locked items with an existing start_minutes are excluded from layout
+        locked = ScheduleItem(
+            option_id=1, name="Fixed", category="food",
+            latitude=None, longitude=None, user_rating=5,
+            is_locked=True, start_minutes=720, duration_minutes=60,
+        )
+        free = ScheduleItem(
+            option_id=2, name="Free", category="sightseeing",
+            latitude=None, longitude=None, user_rating=4,
+            duration_minutes=120,
+        )
+        day = DayPlan(day_number=1, items=[locked, free])
+        _assign_start_times(day)
+        assert locked.start_minutes == 720   # untouched
+        assert free.start_minutes == DAY_START_MINUTES  # placed from day start
 
-def _make_original(option_id: int, day: int = 1, slot: str = "morning",
-                   locked: bool = False) -> DayPlan:
-    """Helper: build a single-item DayPlan for apply_llm_refinement tests."""
-    item = ScheduleItem(
-        option_id=option_id, name=f"Place {option_id}", category="sightseeing",
-        latitude=None, longitude=None, user_rating=4,
-        is_locked=locked, day_number=day, time_slot=slot,
-    )
-    return DayPlan(day_number=day, items=[item])
+    def test_falls_back_to_category_duration_when_item_has_none(self):
+        # No duration_minutes on item → category_default_duration used for spacing
+        day = self._make_day(["sightseeing", "food"], durations=[None, None])
+        _assign_start_times(day)
+        items = sorted(day.items, key=lambda i: i.start_minutes)
+        expected_gap = category_default_duration("sightseeing")  # 120
+        assert items[1].start_minutes == DAY_START_MINUTES + expected_gap
 
 
 class TestApplyLlmRefinement:
-    def _original(self, specs):
-        """Build original day_plans from list of (option_id, day, slot, locked) tuples."""
+    def _make_items(self, specs) -> list[DayPlan]:
+        """Build original day_plans from (option_id, day, start_minutes, locked, duration) tuples."""
         from collections import defaultdict
         buckets: dict[int, list] = defaultdict(list)
-        for opt_id, day, slot, locked in specs:
+        for opt_id, day, start, locked, dur in specs:
             buckets[day].append(ScheduleItem(
                 option_id=opt_id, name=f"Place {opt_id}", category="sightseeing",
                 latitude=None, longitude=None, user_rating=4,
-                is_locked=locked, day_number=day, time_slot=slot,
+                is_locked=locked, day_number=day,
+                start_minutes=start, duration_minutes=dur,
             ))
         return [DayPlan(day_number=d, items=items) for d, items in sorted(buckets.items())]
 
-    def test_happy_path_applies_llm_ordering_and_slots(self):
-        # LLM reorders two items across two days and changes a time slot
-        original = self._original([(1, 1, "morning", False), (2, 2, "morning", False)])
-        llm_days = [
-            {"day": 1, "items": [{"option_id": 2, "name": "Place 2", "time_slot": "evening", "note": ""}]},
-            {"day": 2, "items": [{"option_id": 1, "name": "Place 1", "time_slot": "afternoon", "note": ""}]},
-        ]
-        result = apply_llm_refinement(llm_days, original)
-        assert len(result) == 2
-        day1_ids = [i.option_id for i in result[0].items]
-        day2_ids = [i.option_id for i in result[1].items]
-        assert 2 in day1_ids  # LLM moved opt 2 to day 1
-        assert 1 in day2_ids  # LLM moved opt 1 to day 2
-        assert result[0].items[0].time_slot == "evening"  # LLM slot applied
+    def test_happy_path_uses_llm_start_minutes(self):
+        # LLM assigns specific start_minutes → used on the resulting items
+        original = self._make_items([(1, 1, 540, False, 120), (2, 1, 660, False, 60)])
+        llm_days = [{"day": 1, "items": [
+            {"option_id": 2, "name": "Place 2", "start_minutes": 600, "note": "first"},
+            {"option_id": 1, "name": "Place 1", "start_minutes": 720, "note": "second"},
+        ]}]
+        result = apply_llm_refinement(llm_days, original, num_days=1)
+        assert len(result) == 1
+        by_id = {i.option_id: i for i in result[0].items}
+        assert by_id[2].start_minutes == 600
+        assert by_id[1].start_minutes == 720
 
-    def test_dropped_item_is_added_back(self):
-        # LLM output omits one item → it must appear in the result at its original placement
-        original = self._original([(1, 1, "morning", False), (2, 1, "afternoon", False)])
+    def test_llm_can_move_item_to_different_day(self):
+        original = self._make_items([(1, 1, 540, False, 120), (2, 2, 540, False, 60)])
         llm_days = [
-            {"day": 1, "items": [{"option_id": 1, "name": "Place 1", "time_slot": "morning", "note": ""}]},
-            # opt 2 was dropped by LLM
+            {"day": 1, "items": [{"option_id": 2, "start_minutes": 540, "note": ""}]},
+            {"day": 2, "items": [{"option_id": 1, "start_minutes": 600, "note": ""}]},
         ]
-        result = apply_llm_refinement(llm_days, original)
+        result = apply_llm_refinement(llm_days, original, num_days=2)
+        day1_ids = {i.option_id for i in result[0].items}
+        day2_ids = {i.option_id for i in result[1].items}
+        assert 2 in day1_ids
+        assert 1 in day2_ids
+
+    def test_locked_item_keeps_original_start_minutes(self):
+        # LLM tries to change locked item's time → original start_minutes restored
+        original = self._make_items([(1, 1, 720, True, 60), (2, 1, 540, False, 120)])
+        llm_days = [{"day": 1, "items": [
+            {"option_id": 1, "start_minutes": 900, "note": ""},   # LLM changed locked time
+            {"option_id": 2, "start_minutes": 540, "note": ""},
+        ]}]
+        result = apply_llm_refinement(llm_days, original, num_days=1)
+        locked = next(i for i in result[0].items if i.option_id == 1)
+        assert locked.start_minutes == 720   # original preserved
+
+    def test_dropped_item_is_excluded_from_result(self):
+        # LLM intentionally drops an item (doesn't fit) → it stays out of the schedule
+        original = self._make_items([(1, 1, 540, False, 120), (2, 1, 660, False, 60)])
+        llm_days = [{"day": 1, "items": [
+            {"option_id": 1, "start_minutes": 540, "note": ""},
+            # opt 2 dropped by LLM — too low priority to fit
+        ]}]
+        result = apply_llm_refinement(llm_days, original, num_days=1)
         all_ids = {i.option_id for dp in result for i in dp.items}
         assert 1 in all_ids
-        assert 2 in all_ids  # added back
+        assert 2 not in all_ids   # LLM's drop decision is respected
 
     def test_hallucinated_option_id_is_ignored(self):
-        # LLM adds an option_id that doesn't exist in the original → silently dropped
-        original = self._original([(1, 1, "morning", False)])
-        llm_days = [
-            {"day": 1, "items": [
-                {"option_id": 1, "name": "Place 1", "time_slot": "morning", "note": ""},
-                {"option_id": 999, "name": "Ghost", "time_slot": "morning", "note": ""},
-            ]},
-        ]
-        result = apply_llm_refinement(llm_days, original)
+        original = self._make_items([(1, 1, 540, False, 60)])
+        llm_days = [{"day": 1, "items": [
+            {"option_id": 1, "start_minutes": 540, "note": ""},
+            {"option_id": 999, "start_minutes": 600, "note": ""},  # hallucinated
+        ]}]
+        result = apply_llm_refinement(llm_days, original, num_days=1)
         all_ids = {i.option_id for dp in result for i in dp.items}
         assert 999 not in all_ids
 
-    def test_locked_item_keeps_original_day_and_slot(self):
-        # LLM tries to move locked item to a different day/slot → ignored, original preserved
-        original = self._original([(1, 3, "afternoon", True), (2, 1, "morning", False)])
-        llm_days = [
-            {"day": 1, "items": [
-                {"option_id": 1, "name": "Place 1", "time_slot": "morning", "note": ""},  # LLM moved locked item
-                {"option_id": 2, "name": "Place 2", "time_slot": "morning", "note": ""},
-            ]},
-        ]
-        result = apply_llm_refinement(llm_days, original)
-        locked = next(i for dp in result for i in dp.items if i.option_id == 1)
-        assert locked.day_number == 3       # original preserved
-        assert locked.time_slot == "afternoon"  # original preserved
+    def test_invalid_start_minutes_falls_back_to_sequential(self):
+        # LLM returns a start_minutes out of range → sequential time used (not original)
+        original = self._make_items([(1, 1, 600, False, 60)])
+        llm_days = [{"day": 1, "items": [
+            {"option_id": 1, "start_minutes": 9999, "note": ""},  # invalid
+        ]}]
+        result = apply_llm_refinement(llm_days, original, num_days=1)
+        # Should land at DAY_START_MINUTES, not the original 600
+        assert result[0].items[0].start_minutes == DAY_START_MINUTES
+
+    def test_missing_start_minutes_uses_llm_ordering_sequentially(self):
+        # LLM reorders two items but omits start_minutes → placed sequentially
+        # from DAY_START_MINUTES in LLM order (not original order)
+        original = self._make_items([(1, 1, 540, False, 120), (2, 1, 660, False, 60)])
+        llm_days = [{"day": 1, "items": [
+            {"option_id": 2, "note": "first"},   # LLM puts 2 first, no time given
+            {"option_id": 1, "note": "second"},  # LLM puts 1 second, no time given
+        ]}]
+        result = apply_llm_refinement(llm_days, original, num_days=1)
+        by_id = {i.option_id: i for i in result[0].items}
+        # Item 2 is placed first: starts at DAY_START_MINUTES
+        assert by_id[2].start_minutes == DAY_START_MINUTES
+        # Item 1 follows after item 2's duration (60 min)
+        assert by_id[1].start_minutes == DAY_START_MINUTES + 60
+
+    def test_day_number_above_num_days_returns_empty(self):
+        # Day 4 in a 3-day trip → reject entirely (fixes #17)
+        original = self._make_items([(1, 1, 540, False, 60)])
+        llm_days = [{"day": 4, "items": [{"option_id": 1, "start_minutes": 540, "note": ""}]}]
+        assert apply_llm_refinement(llm_days, original, num_days=3) == []
 
     def test_empty_llm_days_returns_empty(self):
-        # Empty LLM output → caller should fall back to deterministic
-        original = self._original([(1, 1, "morning", False)])
-        assert apply_llm_refinement([], original) == []
+        original = self._make_items([(1, 1, 540, False, 60)])
+        assert apply_llm_refinement([], original, num_days=1) == []
 
     def test_malformed_day_dict_returns_empty(self):
-        # Day dict missing the "day" key → returns [] for deterministic fallback
-        original = self._original([(1, 1, "morning", False)])
-        llm_days = [{"items": [{"option_id": 1, "time_slot": "morning"}]}]  # no "day"
-        assert apply_llm_refinement(llm_days, original) == []
+        original = self._make_items([(1, 1, 540, False, 60)])
+        llm_days = [{"items": [{"option_id": 1, "start_minutes": 540}]}]  # no "day"
+        assert apply_llm_refinement(llm_days, original, num_days=1) == []
+
+    def test_drops_unlocked_items_that_overflow_day_window(self):
+        # LLM piles 10 untimed unlocked items (120 min each) onto a single day.
+        # The sequential fallback must stop at the day window instead of stacking
+        # them into a 40-hour day: only items starting before DAY_END_MINUTES land.
+        original = self._make_items([(i, 1, 540, False, 120) for i in range(1, 11)])
+        llm_days = [{"day": 1, "items": [{"option_id": i} for i in range(1, 11)]}]
+        result = apply_llm_refinement(llm_days, original, num_days=1)
+        starts = [i.start_minutes for i in result[0].items]
+        assert starts, "expected at least one item to fit"
+        assert max(starts) < DAY_END_MINUTES        # nothing starts at/after 21:00
+        # 540, 660, 780, 900, 1020, 1140 fit (next would be 1260 == DAY_END → dropped)
+        assert len(result[0].items) == 6
+
+    def test_unlocked_item_at_or_after_day_end_is_dropped(self):
+        # Item A is placed in-window and kept; item B starts exactly at DAY_END → dropped.
+        original = self._make_items([(1, 1, 540, False, 60), (2, 1, 540, False, 60)])
+        llm_days = [{"day": 1, "items": [
+            {"option_id": 1, "start_minutes": 1140, "note": "evening"},      # in window
+            {"option_id": 2, "start_minutes": DAY_END_MINUTES, "note": "too late"},
+        ]}]
+        result = apply_llm_refinement(llm_days, original, num_days=1)
+        ids = {i.option_id for i in result[0].items}
+        assert ids == {1}
+
+    def test_locked_item_preserved_when_llm_omits_it(self):
+        # The LLM forgets the locked item entirely → it is re-attached to its
+        # original day at its pinned start_minutes, never silently dropped.
+        original = self._make_items([(1, 1, 720, True, 60), (2, 1, 540, False, 120)])
+        llm_days = [{"day": 1, "items": [
+            {"option_id": 2, "start_minutes": 540, "note": ""},  # only the free item
+        ]}]
+        result = apply_llm_refinement(llm_days, original, num_days=1)
+        locked = next(i for i in result[0].items if i.option_id == 1)
+        assert locked.is_locked is True
+        assert locked.day_number == 1
+        assert locked.start_minutes == 720
+
+    def test_items_are_sorted_by_start_within_a_day(self):
+        # LLM returns items out of time order → result is sorted by start_minutes.
+        original = self._make_items([(1, 1, 540, False, 60), (2, 1, 540, False, 60)])
+        llm_days = [{"day": 1, "items": [
+            {"option_id": 1, "start_minutes": 900, "note": ""},
+            {"option_id": 2, "start_minutes": 600, "note": ""},
+        ]}]
+        result = apply_llm_refinement(llm_days, original, num_days=1)
+        starts = [i.start_minutes for i in result[0].items]
+        assert starts == sorted(starts)
+        assert result[0].items[0].option_id == 2  # earlier time first
 
 
 class TestCategoryDefaultDuration:
     def test_mapped_categories_return_seed_values(self):
-        # Seed defaults from issue #28
         assert category_default_duration("food") == 60
         assert category_default_duration("shopping") == 60
         assert category_default_duration("sightseeing") == 120
@@ -247,7 +363,6 @@ class TestCategoryDefaultDuration:
         assert category_default_duration("NATURE") == 180
 
     def test_unmapped_category_falls_back(self):
-        # Categories not in the seed map (incl. future user-defined ones) fall back
         assert category_default_duration("transport") == DEFAULT_DURATION_MINUTES
         assert category_default_duration("breakfast") == DEFAULT_DURATION_MINUTES
 
