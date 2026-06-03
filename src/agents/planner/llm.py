@@ -53,7 +53,7 @@ def _day_label(day_number: int, start_date: Optional[date]) -> str:
     return f"Day {day_number} — {day_names[(day_number - 1) % 7]} (assumed)"
 
 
-def _build_refine_prompt(
+def _build_prompt(
     day_plans: list[DayPlan],
     destination: str,
     start_date: Optional[date] = None,
@@ -96,13 +96,13 @@ class PlannerAgent(LlmAgent):
     def __init__(self, provider: LLMProvider) -> None:
         super().__init__(provider)
 
-    async def refine(
+    async def generate_plan(
         self,
         day_plans: list[DayPlan],
         destination: str,
         start_date: Optional[date] = None,
     ) -> tuple[list[dict], str]:
-        prompt = _build_refine_prompt(day_plans, destination, start_date)
+        prompt = _build_prompt(day_plans, destination, start_date)
         text, err = await self.ask(prompt)
         if err:
             return [], err.replace("Agent error", "Planner agent error")
@@ -132,8 +132,11 @@ def apply_llm_refinement(
       - Locked items are never dropped and never window-capped.
 
     Locked item guarantees:
-      - Placed on their original pinned day_number, regardless of which day the LLM listed them under.
-      - If the LLM omitted them entirely, they are re-attached in phase 3.
+      - Pre-seeded first (Phase 0) on their pinned day at their pinned time, before
+        any LLM output is processed. This means the LLM's unlocked items are always
+        placed around the locked anchors, not on top of them.
+      - The fallback clock for each day starts at the end of the latest locked anchor
+        on that day, so untimed unlocked items naturally follow locked slots.
       - seen_ids prevents any option_id from appearing more than once in the result.
     """
     if not llm_days:
@@ -155,6 +158,9 @@ def apply_llm_refinement(
     # seen_ids.add(), so the same option_id can never appear twice in the result.
     seen_ids: set[int] = set()
     result_by_day: dict[int, DayPlan] = {}
+    # Per-day fallback clock seed: end time of the latest locked anchor per day.
+    # Unlocked items without an explicit LLM time start here, flowing after locks.
+    day_clock_seed: dict[int, int] = {}
 
     def _get_or_create_day(day_num: int) -> DayPlan:
         if day_num not in result_by_day:
@@ -162,11 +168,37 @@ def apply_llm_refinement(
         return result_by_day[day_num]
 
     # -----------------------------------------------------------------------
-    # Phase 2: process the LLM's output day by day.
-    # For each item the LLM listed we either place it (respecting locks and the
-    # day window) or skip it (hallucinated id, duplicate, or past the window).
+    # Phase 0: pre-seed every locked item onto its pinned day before processing
+    # LLM output. This ensures locked anchors are always in the result and that
+    # Phase 2 never places an unlocked item on top of a locked one due to the
+    # LLM moving the locked item to a different day in its output.
+    # -----------------------------------------------------------------------
+    for orig in originals.values():
+        if not orig.is_locked:
+            continue
+        day = orig.day_number if (orig.day_number and 1 <= orig.day_number <= num_days) else 1
+        start = orig.start_minutes if orig.start_minutes is not None else DAY_START_MINUTES
+        duration = orig.duration_minutes or category_default_duration(orig.category)
+        seen_ids.add(orig.option_id)
+        _get_or_create_day(day).items.append(ScheduleItem(
+            option_id=orig.option_id, name=orig.name,
+            category=orig.category, latitude=orig.latitude,
+            longitude=orig.longitude, user_rating=orig.user_rating,
+            is_locked=True, day_number=day,
+            start_minutes=start,
+            duration_minutes=orig.duration_minutes,
+            note=None,
+        ))
+        # Seed the fallback clock for this day past the end of this locked slot.
+        day_clock_seed[day] = max(day_clock_seed.get(day, DAY_START_MINUTES), start + duration)
+
+    # -----------------------------------------------------------------------
+    # Phase 2: process the LLM's unlocked scheduling decisions day by day.
+    # Locked items are already in seen_ids (Phase 0), so they are skipped here.
+    # The fallback clock starts at the end of the last locked anchor for the day
+    # so untimed unlocked items naturally follow the pinned slots.
     # If the LLM repeated the same day number, _get_or_create_day reuses the
-    # existing DayPlan so items from both entries land in the same bucket.
+    # existing DayPlan so all items land in the same bucket.
     # -----------------------------------------------------------------------
     for day_dict in llm_days:
         day_num = day_dict.get("day")
@@ -174,39 +206,17 @@ def apply_llm_refinement(
             return []
 
         dp = _get_or_create_day(day_num)
-        # current_time is a sequential fallback clock: when the LLM omits a
-        # valid start_minutes we place the item immediately after the previous
-        # one so the LLM's ordering still drives placement.
-        current_time = DAY_START_MINUTES
+        # Start the fallback clock after any locked anchors on this day.
+        current_time = day_clock_seed.get(day_num, DAY_START_MINUTES)
 
         for item_dict in day_dict.get("items", []):
             opt_id = item_dict.get("option_id")
             orig = originals.get(opt_id)
             if orig is None or opt_id in seen_ids:
-                continue  # hallucinated id or already placed
+                continue  # hallucinated id, already placed (including all locked items)
 
             duration = orig.duration_minutes or category_default_duration(orig.category)
             note = item_dict.get("note") or None
-
-            if orig.is_locked:
-                # Locked items are user-pinned anchors. Place them on their
-                # original day (not necessarily the LLM's day) at their pinned
-                # time. Advance the fallback clock so the next untimed unlocked
-                # item doesn't land before this anchor.
-                start = orig.start_minutes if orig.start_minutes is not None else current_time
-                pinned_day = orig.day_number if (orig.day_number and 1 <= orig.day_number <= num_days) else day_num
-                seen_ids.add(opt_id)
-                _get_or_create_day(pinned_day).items.append(ScheduleItem(
-                    option_id=orig.option_id, name=orig.name,
-                    category=orig.category, latitude=orig.latitude,
-                    longitude=orig.longitude, user_rating=orig.user_rating,
-                    is_locked=True, day_number=pinned_day,
-                    start_minutes=start,
-                    duration_minutes=orig.duration_minutes,
-                    note=note,
-                ))
-                current_time = max(current_time, start + duration)
-                continue
 
             # Unlocked: use the LLM's start_minutes when valid (0–1439),
             # otherwise fall forward to current_time.
@@ -230,28 +240,6 @@ def apply_llm_refinement(
                 note=note,
             ))
             current_time = start + duration
-
-    # -----------------------------------------------------------------------
-    # Phase 3: re-attach locked items the LLM omitted entirely.
-    # Unlocked omissions stay dropped — that is the LLM's intentional
-    # "doesn't fit" decision. Locked items are user-pinned and must survive.
-    # seen_ids prevents duplicates: if a locked item was already placed in
-    # phase 2 it will be in seen_ids and skipped here.
-    # -----------------------------------------------------------------------
-    for orig in originals.values():
-        if not orig.is_locked or orig.option_id in seen_ids:
-            continue
-        day = orig.day_number if (orig.day_number and 1 <= orig.day_number <= num_days) else 1
-        seen_ids.add(orig.option_id)
-        _get_or_create_day(day).items.append(ScheduleItem(
-            option_id=orig.option_id, name=orig.name,
-            category=orig.category, latitude=orig.latitude,
-            longitude=orig.longitude, user_rating=orig.user_rating,
-            is_locked=True, day_number=day,
-            start_minutes=orig.start_minutes if orig.start_minutes is not None else DAY_START_MINUTES,
-            duration_minutes=orig.duration_minutes,
-            note=None,
-        ))
 
     result = list(result_by_day.values())
     for dp in result:
@@ -280,7 +268,7 @@ class LlmPlanner:
         min_rating: int = 1,
     ) -> PlanResult:
         draft = build_schedule(options, num_days=num_days, min_rating=min_rating)
-        llm_days, err = await self._agent.refine(
+        llm_days, err = await self._agent.generate_plan(
             draft, destination or "", start_date=start_date
         )
         if err:
