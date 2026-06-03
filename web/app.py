@@ -261,8 +261,9 @@ def _render_tab(request: Request, session: Session, trip: Trip, tab: str, ctx: d
             days.setdefault(si.day_number, []).append(si)
         for items in days.values():
             items.sort(key=lambda x: x.start_minutes if x.start_minutes is not None else 9999)
+        num_days = trip.num_days or (max(days.keys()) if days else 0)
         return templates.get_template("trips/_tab_schedule.html").render({
-            **ctx, "request": request, "days": days,
+            **ctx, "request": request, "days": days, "num_days": num_days,
         })
     return ""
 

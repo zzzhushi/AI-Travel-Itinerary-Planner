@@ -20,7 +20,7 @@
 <div id="schedule-timeline"
      class="flex gap-0 overflow-x-auto pb-4"
      data-trip-id="{{ trip.id }}"
-     data-num-days="{{ days | length }}">
+     data-num-days="{{ num_days }}">
 
   <!-- Time axis -->
   <div class="flex-shrink-0 w-12 relative mr-2" style="height: {{ window_px }}px; margin-top: 36px;">
@@ -34,8 +34,8 @@
   </div>
 
   <!-- Day columns -->
-  {% for day_num in days | sort %}
-  {% set items = days[day_num] %}
+  {% for day_num in range(1, num_days + 1) %}
+  {% set items = days.get(day_num, []) %}
   <div class="flex-shrink-0 w-44 mr-2" data-day-num="{{ day_num }}">
     <div class="bg-indigo-600 text-white text-sm font-semibold px-3 py-1.5 rounded-t-lg mb-0">
       Day {{ day_num }}
