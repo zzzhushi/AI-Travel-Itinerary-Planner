@@ -77,6 +77,9 @@ def _item_position(item: ScheduledItem) -> tuple[int, int]:
     return max(start - _TIMELINE_START, 0), max(eff_dur, 20)
 
 
+templates.env.globals["item_position"] = _item_position
+
+
 # ---------------------------------------------------------------------------
 # In-memory job state (research + schedule generation per trip)
 # ---------------------------------------------------------------------------
@@ -515,7 +518,24 @@ async def generate_schedule_route(
     trip = get_trip(session, trip_id)
     if not trip:
         return HTMLResponse("", status_code=404)
-    num_days = trip.num_days or 3
+    if not trip.num_days:
+        ctx = _trip_context(session, trip)
+        schedule = get_schedule(session, trip.id)
+        days: dict[int, list] = {}
+        for si in schedule:
+            days.setdefault(si.day_number, []).append(si)
+        for lst in days.values():
+            lst.sort(key=lambda x: x.start_minutes if x.start_minutes is not None else 9999)
+        num_days_val = max(days.keys()) if days else 0
+        tab_content = templates.get_template("trips/_tab_schedule.html").render({
+            **ctx, "request": request, "days": days, "num_days": num_days_val,
+            "schedule_done": True,
+            "schedule_warn": "Set the number of days for this trip before generating a schedule.",
+        })
+        return templates.TemplateResponse(request, "trips/_tabs_wrapper.html", {
+            "request": request, **ctx, "active_tab": "schedule", "tab_content": tab_content,
+        })
+    num_days = trip.num_days
 
     job = _Job()
     _schedule_jobs[trip_id] = job
@@ -548,8 +568,9 @@ def schedule_status(request: Request, trip_id: int, session: Session = Depends(g
     ctx = _trip_context(session, trip, schedule=schedule)
     warn = job.result.get("warn", "") if job.result else ""
     error = job.error
+    num_days = trip.num_days or (max(days.keys()) if days else 0)
     tab_content = templates.get_template("trips/_tab_schedule.html").render({
-        **ctx, "request": request, "days": days,
+        **ctx, "request": request, "days": days, "num_days": num_days,
         "schedule_done": True, "schedule_warn": warn, "schedule_error": error,
     })
     return templates.TemplateResponse(request, "trips/_tabs_wrapper.html", {
