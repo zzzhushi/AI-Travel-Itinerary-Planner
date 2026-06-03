@@ -16,7 +16,7 @@ src/
     base.py             # LlmAgent base class (holds a provider, delegates ask())
     researcher.py       # ResearcherAgent: research() + research_batch()
     planner.py          # PlannerAgent: refine(); build_schedule() pure Python
-    orchestrator.py     # Singletons + public API: research(), research_batch(), generate_schedule()
+    orchestrator.py     # Thread-local singletons + public API: research(), research_batch(), generate_schedule()
   db/
     models.py           # SQLAlchemy ORM: Trip, Activity, Option, ScheduledItem, TripPreferences
     database.py         # Sync (CLI) and async (web) session factories
@@ -81,18 +81,18 @@ pytest
 ## Key Design Decisions
 
 - **Injectable providers**: Agents (`ResearcherAgent`, `PlannerAgent`) take a `LLMProvider` at construction. `GeminiProvider` is used in production; `MockProvider` (in `tests/mocks/`) is used in tests. No env vars needed for unit tests.
-- **Singleton ownership**: `orchestrator.py` owns the production singletons (`_get_researcher()`, `_get_planner()`). Agent classes themselves hold no singleton state.
+- **Thread-local singletons**: `orchestrator.py` owns the production agent instances via `threading.local()`. Each thread (web background thread or CLI run) gets its own `ResearcherAgent`/`PlannerAgent` bound to its own event loop, preventing `RuntimeError("Event loop is closed")` on concurrent or repeated calls. Agent classes themselves hold no singleton state.
 - **Service layer**: `src/services/trip_service.py` holds business logic shared between the CLI and the coming web routes. CLI functions call services; services call queries + orchestrator.
 - **Idempotent research**: `Activity.researched_at` is set by `mark_researched()` after a successful run. `get_unresearched_activities()` filters on `researched_at IS NULL`, so already-researched activities are never re-sent to the LLM.
-- **Two-phase planning**: deterministic Python round-robin schedule first, then optional Gemini LLM refinement pass for human-readable ordering and notes.
-- **Locked items**: `ScheduledItem.is_locked = True` means the planner and (later) drag-drop UI will not move that item.
+- **Two-phase planning**: deterministic Python round-robin schedule first, then optional Gemini LLM refinement pass that assigns real clock times, respects opening hours, and minimises geographic backtracking. `apply_llm_refinement` enforces a hard 09:00–21:00 day window: unlocked items that would start at/after `DAY_END_MINUTES` are dropped rather than appended, preventing unbounded day growth.
+- **Locked items**: `ScheduledItem.is_locked = True` pins an item to its day and `start_minutes`. The planner never moves or drops locked items — even if the LLM omits them, they are re-attached at their pinned time. The pinned `start_minutes` is plumbed from the DB through `get_rated_options_for_schedule` → `build_schedule` so it survives repeated regenerations.
 - **day_number vs real dates**: Schedule uses day_number (1-based) until Trip.start_date is provided.
 
 ## Do
 
 - Ensure code comments are updated and unit tests are written for larger changes.
 - Use `Optional[str]` (not `str | None`) in SQLAlchemy `Mapped` columns — Python 3.14 compat.
-- Add new activity categories to `ACTIVITY_CATEGORIES` in `src/db/models.py`, `_CATEGORY_SLOT`, and `_CATEGORY_DURATION` in `src/agents/planner.py`.
+- Add new activity categories to `ACTIVITY_CATEGORIES` in `src/db/models.py`, `_CATEGORY_ORDER`, and `_CATEGORY_DURATION` in `src/agents/planner.py`.
 - New agents must accept a `LLMProvider` and follow the singleton pattern in `src/agents/orchestrator.py`.
 - Run `pytest tests/unit/` before merging — all unit tests must pass without `GOOGLE_API_KEY` or `DATABASE_URL`.
 - When adding or changing agent behaviour, update the corresponding test in `tests/unit/test_researcher_agent.py` or `test_planner_agent.py`.
@@ -109,7 +109,7 @@ pytest
 ## Do Not
 
 - Do not add Docker — local PostgreSQL native install is the intended setup.
-- Do not call `asyncio.run()` inside FastAPI route handlers.
+- Do not call `asyncio.run()` inside FastAPI route handlers, and do not use it in the CLI either — use the module-level `_run()` helper in `cli.py` which reuses a persistent event loop. Creating a new loop per call causes `RuntimeError("Event loop is closed")` on the second LLM invocation.
 - Do not put business logic in route files — use the service layer.
 - Do not use `Base.metadata.create_all()` in production — use Alembic migrations.
 - Do not shadow imported type names with local variables (e.g., `Session = factory()` shadows the `Session` ORM type). Use descriptive names like `factory`.
@@ -122,6 +122,5 @@ pytest
 - Export (PDF, Google Calendar, Google Doc)
 - Budget tracking
 - Flights
-- Opening hours awareness
 - Notes per activity
 - Undo/redo on schedule
