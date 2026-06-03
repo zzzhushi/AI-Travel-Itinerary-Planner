@@ -193,7 +193,7 @@ def apply_llm_refinement(
         day_clock_seed[day] = max(day_clock_seed.get(day, DAY_START_MINUTES), start + duration)
 
     # -----------------------------------------------------------------------
-    # Phase 2: process the LLM's unlocked scheduling decisions day by day.
+    # Phase 1: process the LLM's unlocked scheduling decisions day by day.
     # Locked items are already in seen_ids (Phase 0), so they are skipped here.
     # The fallback clock starts at the end of the last locked anchor for the day
     # so untimed unlocked items naturally follow the pinned slots.
