@@ -114,12 +114,18 @@ async def generate_schedule(
     use_llm_refinement: bool = True,
     min_rating: int = 3,
     start_date: Optional[date] = None,
+    travel_matrix: Optional[dict[str, dict[tuple[int, int], dict]]] = None,
 ) -> PlanResult:
     """Generate a day-by-day schedule from rated options.
 
     Tries the LlmPlanner first when use_llm_refinement=True. Falls back to
     DeterministicPlanner if the LLM fails or produces an unusable schedule.
     Always returns a bounded, valid schedule.
+
+    `travel_matrix` is the inter-cluster travel matrix
+    (`services.travel.cluster_and_route`); it is passed to the LlmPlanner so the
+    model can sequence clusters by real travel time. The DeterministicPlanner
+    ignores it.
     """
     if use_llm_refinement:
         result = await _get_llm_planner().plan(
@@ -127,6 +133,7 @@ async def generate_schedule(
             destination=destination,
             start_date=start_date,
             min_rating=min_rating,
+            travel_matrix=travel_matrix,
         )
         if result.day_plans:
             return result

@@ -16,6 +16,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from src.services.orchestrator import generate_schedule, research_batch
+from src.services.travel import cluster_and_route
 from src.workers.planner import PlanResult
 from src.db.models import Trip
 from src.db.queries import (
@@ -171,6 +172,18 @@ async def generate_and_save_schedule(
     if not options:
         return PlanResult(day_plans=[], source="deterministic")
 
+    # Geographic clustering + inter-cluster travel matrix feed the LLM planner.
+    # cluster_and_route stamps cluster_id/cluster_name onto the option dicts in
+    # place (so they reach the prompt) and returns the K×K matrix. With no
+    # routes client it falls back to haversine estimates — no API billing.
+    # Skipped for the deterministic-only path, which ignores both signals.
+    travel_matrix = None
+    if use_llm_refinement:
+        try:
+            travel_matrix = cluster_and_route(session, options)
+        except Exception:
+            logger.warning("Clustering/travel-matrix failed for trip %s", trip.id, exc_info=True)
+
     result = await generate_schedule(
         destination=trip.destination,
         options=options,
@@ -178,6 +191,7 @@ async def generate_and_save_schedule(
         use_llm_refinement=use_llm_refinement,
         min_rating=1,
         start_date=trip.start_date,
+        travel_matrix=travel_matrix,
     )
 
     upsert_schedule(session, trip.id, result.day_plans)

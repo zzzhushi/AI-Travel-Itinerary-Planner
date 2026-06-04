@@ -191,6 +191,70 @@ class TestGenerateAndSaveSchedule:
         assert result.warning == ""
         m.assert_not_called()
 
+    def _setup_enriched_rated_options(self, session, trip) -> list:
+        """Two enriched, rated options in distinct Tokyo neighbourhoods."""
+        act = add_activity(session, trip.id, "things to do", "sightseeing", False)
+        opts = save_options(session, act.id, [
+            {"name": "Senso-ji", "latitude": 35.7148, "longitude": 139.7967},
+            {"name": "Shibuya Crossing", "latitude": 35.6595, "longitude": 139.7004},
+        ])
+        opts[0].place_id, opts[0].neighborhood, opts[0].google_rating = "sensoji", "Asakusa", 4.6
+        opts[1].place_id, opts[1].neighborhood, opts[1].google_rating = "shibuya", "Shibuya", 4.5
+        for opt in opts:
+            set_rating(session, opt.id, 4)
+        session.commit()
+        return opts
+
+    @pytest.mark.asyncio
+    async def test_llm_path_clusters_and_passes_travel_matrix(self, session):
+        # LLM path: options are clustered, cluster fields stamped, matrix passed.
+        trip = create_trip(session, "Test", "Tokyo", 3)
+        opts = self._setup_enriched_rated_options(session, trip)
+        day_plans = _make_day_plans(trip.id, [opts[0].id, opts[1].id])
+
+        with patch("src.services.trip_service.generate_schedule", new_callable=AsyncMock) as m:
+            m.return_value = PlanResult(day_plans=day_plans, source="llm")
+            await generate_and_save_schedule(session, trip, num_days=3, use_llm_refinement=True)
+
+        kwargs = m.call_args.kwargs
+        # Haversine matrix computed and handed to the planner.
+        assert set(kwargs["travel_matrix"]) == {"walk", "drive"}
+        assert len(kwargs["travel_matrix"]["walk"]) == 2  # two clusters, both directions
+        # Cluster fields stamped onto the options passed downstream.
+        passed = {o["option_id"]: o for o in kwargs["options"]}
+        assert passed[opts[0].id]["cluster_name"] == "Asakusa"
+        assert passed[opts[0].id]["cluster_id"] != passed[opts[1].id]["cluster_id"]
+
+    @pytest.mark.asyncio
+    async def test_deterministic_path_skips_clustering(self, session):
+        # AI off: no clustering work, travel_matrix is None.
+        trip = create_trip(session, "Test", "Tokyo", 3)
+        opts = self._setup_rated_options(session, trip, n=1)
+        day_plans = _make_day_plans(trip.id, [opts[0].id])
+
+        with patch("src.services.trip_service.generate_schedule", new_callable=AsyncMock) as m, \
+             patch("src.services.trip_service.cluster_and_route") as c:
+            m.return_value = PlanResult(day_plans=day_plans, source="deterministic")
+            await generate_and_save_schedule(session, trip, num_days=2, use_llm_refinement=False)
+
+        c.assert_not_called()
+        assert m.call_args.kwargs["travel_matrix"] is None
+
+    @pytest.mark.asyncio
+    async def test_clustering_failure_does_not_break_scheduling(self, session):
+        # A clustering/matrix error degrades to travel_matrix=None, not a crash.
+        trip = create_trip(session, "Test", "Tokyo", 3)
+        opts = self._setup_rated_options(session, trip, n=1)
+        day_plans = _make_day_plans(trip.id, [opts[0].id])
+
+        with patch("src.services.trip_service.generate_schedule", new_callable=AsyncMock) as m, \
+             patch("src.services.trip_service.cluster_and_route", side_effect=RuntimeError("boom")):
+            m.return_value = PlanResult(day_plans=day_plans, source="llm")
+            await generate_and_save_schedule(session, trip, num_days=2)
+
+        assert m.call_args.kwargs["travel_matrix"] is None
+        assert get_schedule(session, trip.id)  # schedule still saved
+
 
 # ---------------------------------------------------------------------------
 # research_and_enrich
