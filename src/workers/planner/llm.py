@@ -205,7 +205,6 @@ def _build_prompt(
         f"note per item explaining the placement."
     )
 
-    logger.warning(prompt)
     logger.warning("Prompt length: %d characters", len(prompt))
 
     return prompt
