@@ -182,6 +182,55 @@ def cmd_enrich(session, trip) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Command: Show options (with enriched fields)
+# ---------------------------------------------------------------------------
+
+def _price_label(level: Optional[int]) -> str:
+    """Format a Places price_level (0–4) as Free / $..$$$$, or — when unknown."""
+    if level is None:
+        return "—"
+    return "Free" if level == 0 else "$" * level
+
+
+def cmd_show_options(session, trip) -> None:
+    """Show every option grouped by activity, with its enriched Places fields.
+
+    Useful for validating enrichment (neighborhood, Google rating, price, maps
+    link). Neighborhood and the researcher's location are shown side by side.
+    """
+    from src.db.queries import get_options_for_trip
+
+    activity_options = get_options_for_trip(session, trip.id)
+    if not activity_options:
+        console.print("[yellow]No options yet. Run research first.[/yellow]")
+        return
+
+    for act, options in activity_options:
+        table = Table(title=f"[bold cyan]{act.query}[/bold cyan]", show_lines=False)
+        table.add_column("#", width=3, style="dim")
+        table.add_column("Name", style="bold", min_width=18)
+        table.add_column("Neighborhood", min_width=10)
+        table.add_column("Location", min_width=10)
+        table.add_column("★", width=3)
+        table.add_column("Google", width=6)
+        table.add_column("Price", width=5)
+        table.add_column("Maps", width=4)
+        for i, opt in enumerate(options, 1):
+            # neighborhood column is added in #76; getattr keeps this working on
+            # branches/DBs without it (shows "—" until that lands).
+            neighborhood = getattr(opt, "neighborhood", None) or "—"
+            user_rating = f"★{opt.user_rating}" if opt.user_rating else "—"
+            google = f"{opt.google_rating:.1f}" if opt.google_rating else "—"
+            maps = "✓" if opt.maps_link else "—"
+            table.add_row(
+                str(i), opt.name, neighborhood, opt.location or "—",
+                user_rating, google, _price_label(opt.price_level), maps,
+            )
+        console.print(table)
+    console.print()
+
+
+# ---------------------------------------------------------------------------
 # Command: Rank options
 # ---------------------------------------------------------------------------
 
@@ -446,8 +495,9 @@ def main_menu(session, trip) -> None:
         console.print(f"  4. Rank options         {rank_tag}")
         console.print(f"  5. Re-rank options")
         console.print(f"  6. Generate itinerary")
-        console.print(f"  7. View trip")
-        console.print(f"  8. Switch trip")
+        console.print(f"  7. Show options")
+        console.print(f"  8. View trip")
+        console.print(f"  9. Switch trip")
         console.print(f"  0. Exit")
 
         choice = prompt("\nChoice").strip()
@@ -465,8 +515,10 @@ def main_menu(session, trip) -> None:
         elif choice == "6":
             cmd_generate(session, trip)
         elif choice == "7":
-            cmd_view_trip(session, trip)
+            cmd_show_options(session, trip)
         elif choice == "8":
+            cmd_view_trip(session, trip)
+        elif choice == "9":
             trip = select_or_create_trip(session)
         elif choice == "0":
             console.print("[dim]Goodbye.[/dim]")
