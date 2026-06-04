@@ -121,28 +121,46 @@ class TestSelectAnchors:
         place_ids = {1: "pa", 2: "pb", 3: "pc"}
         ratings = {1: 4.0, 2: 4.8, 3: 4.5}
         anchors = select_anchors(clusters, place_ids, ratings)
-        assert anchors == [ClusterAnchor(0, "pb")]
+        assert [(a.cluster_id, a.place_id) for a in anchors] == [(0, "pb")]
 
     def test_skips_members_without_place_id(self):
         clusters = [Cluster(0, "X", (1, 2))]
-        # Member 2 has the higher rating but no place_id → fall back to member 1.
         anchors = select_anchors(clusters, {1: "pa", 2: None}, {1: 3.0, 2: 5.0})
-        assert anchors == [ClusterAnchor(0, "pa")]
+        assert [(a.cluster_id, a.place_id) for a in anchors] == [(0, "pa")]
 
     def test_ties_break_to_lowest_option_id(self):
         clusters = [Cluster(0, "X", (1, 2))]
         anchors = select_anchors(clusters, {1: "pa", 2: "pb"}, {1: 4.0, 2: 4.0})
-        assert anchors == [ClusterAnchor(0, "pa")]
+        assert [(a.cluster_id, a.place_id) for a in anchors] == [(0, "pa")]
 
     def test_cluster_without_any_place_id_is_dropped(self):
         clusters = [Cluster(0, "X", (1,)), Cluster(1, "Y", (2,))]
         anchors = select_anchors(clusters, {1: None, 2: "pb"})
-        assert anchors == [ClusterAnchor(1, "pb")]
+        assert [(a.cluster_id, a.place_id) for a in anchors] == [(1, "pb")]
 
     def test_no_ratings_still_picks_a_member(self):
         clusters = [Cluster(0, "X", (5, 7))]
         anchors = select_anchors(clusters, {5: "p5", 7: "p7"})
-        assert anchors == [ClusterAnchor(0, "p5")]  # lowest option_id
+        assert [(a.cluster_id, a.place_id) for a in anchors] == [(0, "p5")]
+
+    def test_coords_by_option_populates_anchor_latlng(self):
+        clusters = [Cluster(0, "X", (1, 2))]
+        anchors = select_anchors(
+            clusters,
+            {1: "pa", 2: "pb"},
+            {1: 4.0, 2: 4.8},
+            coords_by_option={1: (35.6, 139.7), 2: (35.7, 139.8)},
+        )
+        # Member 2 is highest-rated → anchor "pb" with its coordinates.
+        assert anchors[0].place_id == "pb"
+        assert anchors[0].latitude == 35.7
+        assert anchors[0].longitude == 139.8
+
+    def test_missing_coords_leave_anchor_latlng_none(self):
+        clusters = [Cluster(0, "X", (1,))]
+        anchors = select_anchors(clusters, {1: "pa"})
+        assert anchors[0].latitude is None
+        assert anchors[0].longitude is None
 
 
 # ---------------------------------------------------------------------------
@@ -202,10 +220,23 @@ class TestComputeMatrix:
         # Nothing cached → a later successful call still tries the API.
         assert session.query(RouteCache).count() == 0
 
-    def test_no_client_returns_cache_only(self, session):
-        # Cold cache + no client → empty matrix, no crash.
+    def test_no_client_no_coords_returns_empty(self, session):
+        # Anchors have no coordinates → haversine fallback can't be built → empty.
         matrix = compute_inter_cluster_matrix(session, _ANCHORS, None, modes=("walk",))
         assert matrix["walk"] == {}
+
+    def test_no_client_with_coords_falls_back_to_haversine(self, session):
+        # Anchors carry lat/lng → haversine auto-built; matrix is populated.
+        anchors = [
+            ClusterAnchor(0, "A", 35.658, 139.745),  # Tokyo Tower area
+            ClusterAnchor(1, "B", 35.660, 139.700),  # ~3 km west
+        ]
+        matrix = compute_inter_cluster_matrix(session, anchors, None, modes=("walk",))
+        assert (0, 1) in matrix["walk"]
+        assert matrix["walk"][(0, 1)]["duration_seconds"] > 0
+        # Results cached — a second call with no client still serves from cache.
+        matrix2 = compute_inter_cluster_matrix(session, anchors, None, modes=("walk",))
+        assert matrix2["walk"][(0, 1)] == matrix["walk"][(0, 1)]
 
     def test_no_client_still_serves_existing_cache(self, session):
         upsert_route(session, "A", "B", "walk", _leg(1200))
