@@ -128,24 +128,28 @@ def _parse_place(place: dict) -> dict:
     }
 
 
-# Address-component types that name a neighborhood, most specific first. Google
-# tags wards/districts (e.g. Tokyo's "Shinjuku") as sublocality_level_1, while a
-# true "neighborhood" type is rarer — so we prefer the former where present.
+# Address-component types that name a neighborhood, in priority order.
+# Japanese addresses use multiple sublocality levels for block/lot numbers
+# (e.g. "1" for chome), so we try each level and skip purely numeric values.
+# Priority: explicit neighborhood > ward/ku (level 1) > town/cho (level 2) >
+# generic sublocality > finer levels.
 _NEIGHBORHOOD_TYPES = (
     "neighborhood",
     "sublocality_level_1",
-    "sublocality",
     "sublocality_level_2",
+    "sublocality",
+    "sublocality_level_3",
+    "sublocality_level_4",
 )
 
 
 def _parse_neighborhood(components: Optional[list]) -> Optional[str]:
-    """Pick the most specific neighborhood-like name from Places addressComponents.
+    """Pick the most useful neighborhood name from Places addressComponents.
 
-    Each component carries a `types` list (e.g. ["sublocality_level_1",
-    "sublocality", "political"]). We map type → text (first occurrence wins) and
-    return the highest-priority match per _NEIGHBORHOOD_TYPES, or None if the
-    response carried no neighborhood-like component.
+    Builds a map of type → text across all components, then walks
+    _NEIGHBORHOOD_TYPES in priority order, skipping purely numeric values
+    (Japanese chome/ban block numbers like "1" or "2-3"). Returns the first
+    non-numeric match, or None if no neighborhood-like component exists.
     """
     text_by_type: dict[str, str] = {}
     for comp in components or []:
@@ -155,8 +159,9 @@ def _parse_neighborhood(components: Optional[list]) -> Optional[str]:
         for type_name in comp.get("types") or []:
             text_by_type.setdefault(type_name, text)
     for type_name in _NEIGHBORHOOD_TYPES:
-        if type_name in text_by_type:
-            return text_by_type[type_name]
+        value = text_by_type.get(type_name)
+        if value and not value.replace("-", "").isdigit():
+            return value
     return None
 
 

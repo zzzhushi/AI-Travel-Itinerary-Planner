@@ -161,3 +161,31 @@ class TestParseNeighborhood:
             {"longText": "Shinjuku", "types": ["sublocality_level_1"]},
         ]
         assert _parse_neighborhood(components) == "Shinjuku"
+
+    def test_skips_numeric_sublocality_level_1_japan(self):
+        # Japanese chome block numbers (e.g. "1") appear as sublocality_level_1
+        # for some places. The parser should skip them and fall back to the town
+        # name at sublocality_level_2 (e.g. "Sanbancho").
+        components = [
+            {"longText": "1", "types": ["sublocality_level_3", "sublocality", "political"]},
+            {"longText": "Sanbancho", "types": ["sublocality_level_2", "sublocality", "political"]},
+            {"longText": "Chiyoda City", "types": ["sublocality_level_1", "sublocality", "political"]},
+            {"longText": "Tokyo", "types": ["locality", "political"]},
+        ]
+        assert _parse_neighborhood(components) == "Chiyoda City"
+
+    def test_skips_numeric_hyphenated_block_number(self):
+        # "2-3" style block references are also numeric and should be skipped.
+        components = [
+            {"longText": "2-3", "types": ["sublocality_level_1", "sublocality"]},
+            {"longText": "Minami-Aoyama", "types": ["sublocality_level_2", "sublocality"]},
+        ]
+        assert _parse_neighborhood(components) == "Minami-Aoyama"
+
+    def test_all_numeric_returns_none(self):
+        # Every candidate is a number → no usable neighborhood name.
+        components = [
+            {"longText": "1", "types": ["sublocality_level_1", "sublocality"]},
+            {"longText": "2", "types": ["sublocality_level_2", "sublocality"]},
+        ]
+        assert _parse_neighborhood(components) is None
