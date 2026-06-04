@@ -139,6 +139,7 @@ async def enrich_options_with_places(
             opt.latitude = result.get("latitude")
             opt.longitude = result.get("longitude")
             opt.maps_link = result.get("maps_link")
+            opt.neighborhood = result.get("neighborhood")
             if result.get("formatted_address"):
                 opt.address = result["formatted_address"]
             opt.google_rating = result.get("google_rating")

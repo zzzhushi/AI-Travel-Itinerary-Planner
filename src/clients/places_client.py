@@ -32,6 +32,11 @@ _FIELD_MASK = ",".join([
     "places.internationalPhoneNumber",
     "places.websiteUri",
     "places.regularOpeningHours",
+    # addressComponents carries the neighborhood / sublocality (e.g. "Shinjuku"),
+    # used to name geographic clusters when scheduling. It sits in a lower billing
+    # tier than the rating / opening-hours fields already requested above, so it
+    # does not raise the Text Search SKU tier (billing = highest tier requested).
+    "places.addressComponents",
 ])
 
 
@@ -63,8 +68,8 @@ class PlacesClient:
         """Resolve a search string to a place dict, or None on no-match / error.
 
         Returns a dict with keys: place_id, latitude, longitude, maps_link,
-        formatted_address, google_rating, price_level, phone_number, website,
-        opening_hours (JSON-encoded weekday strings list).
+        formatted_address, neighborhood, google_rating, price_level,
+        phone_number, website, opening_hours (JSON-encoded weekday strings list).
         """
         if not maps_search:
             return None
@@ -114,12 +119,50 @@ def _parse_place(place: dict) -> dict:
         "longitude": location.get("longitude"),
         "maps_link": place.get("googleMapsUri"),
         "formatted_address": place.get("formattedAddress"),
+        "neighborhood": _parse_neighborhood(place.get("addressComponents")),
         "google_rating": place.get("rating"),
         "price_level": _parse_price_level(place.get("priceLevel")),
         "phone_number": place.get("internationalPhoneNumber"),
         "website": place.get("websiteUri"),
         "opening_hours": json.dumps(weekday_descriptions) if weekday_descriptions else None,
     }
+
+
+# Address-component types that name a neighborhood, in priority order.
+# Japanese addresses use multiple sublocality levels for block/lot numbers
+# (e.g. "1" for chome), so we try each level and skip purely numeric values.
+# Priority: explicit neighborhood > ward/ku (level 1) > town/cho (level 2) >
+# generic sublocality > finer levels.
+_NEIGHBORHOOD_TYPES = (
+    "neighborhood",
+    "sublocality_level_1",
+    "sublocality_level_2",
+    "sublocality",
+    "sublocality_level_3",
+    "sublocality_level_4",
+)
+
+
+def _parse_neighborhood(components: Optional[list]) -> Optional[str]:
+    """Pick the most useful neighborhood name from Places addressComponents.
+
+    Builds a map of type → text across all components, then walks
+    _NEIGHBORHOOD_TYPES in priority order, skipping purely numeric values
+    (Japanese chome/ban block numbers like "1" or "2-3"). Returns the first
+    non-numeric match, or None if no neighborhood-like component exists.
+    """
+    text_by_type: dict[str, str] = {}
+    for comp in components or []:
+        text = comp.get("longText") or comp.get("shortText")
+        if not text:
+            continue
+        for type_name in comp.get("types") or []:
+            text_by_type.setdefault(type_name, text)
+    for type_name in _NEIGHBORHOOD_TYPES:
+        value = text_by_type.get(type_name)
+        if value and not value.replace("-", "").isdigit():
+            return value
+    return None
 
 
 def _parse_price_level(value: Optional[str]) -> Optional[int]:

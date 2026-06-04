@@ -214,6 +214,34 @@ def test_update_trip_invalid_date_returns_422(client, db_factory):
 
 
 # ---------------------------------------------------------------------------
+# Options tab
+# ---------------------------------------------------------------------------
+
+def test_options_tab_shows_neighborhood(client, db_factory):
+    # An enriched option's neighborhood renders as a chip in the options tab.
+    trip_id = _make_trip(db_factory)
+    with db_factory() as s:
+        act = add_activity(s, trip_id, "ramen", "food", False)
+        [opt] = save_options(s, act.id, [{"name": "Ichiran"}])
+        opt.neighborhood = "Shinjuku"
+        s.commit()
+    r = client.get(f"/trips/{trip_id}/tabs/options")
+    assert r.status_code == 200
+    assert "Shinjuku" in r.text
+
+
+def test_options_tab_omits_neighborhood_when_absent(client, db_factory):
+    # No neighborhood → no chip (and no crash).
+    trip_id = _make_trip(db_factory)
+    with db_factory() as s:
+        act = add_activity(s, trip_id, "ramen", "food", False)
+        save_options(s, act.id, [{"name": "Ichiran"}])
+    r = client.get(f"/trips/{trip_id}/tabs/options")
+    assert r.status_code == 200
+    assert "Ichiran" in r.text
+
+
+# ---------------------------------------------------------------------------
 # Rating
 # ---------------------------------------------------------------------------
 
