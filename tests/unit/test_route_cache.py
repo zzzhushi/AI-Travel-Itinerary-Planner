@@ -19,6 +19,7 @@ from src.db.queries import (
 )
 from src.services.travel import (
     ClusterAnchor,
+    cluster_and_route,
     compute_inter_cluster_matrix,
     select_anchors,
 )
@@ -258,3 +259,65 @@ class TestComputeMatrix:
             session, _ANCHORS, client, modes=("transit",)
         )
         assert matrix["transit"][(0, 1)]["duration_seconds"] == 800
+
+
+# ---------------------------------------------------------------------------
+# cluster_and_route — end-to-end clustering + haversine matrix coordination
+# ---------------------------------------------------------------------------
+
+class TestClusterAndRoute:
+    def _options(self) -> list[dict]:
+        # Two Asakusa stops ~0.3 km apart; Shibuya ~8 km away. All enriched.
+        return [
+            {"option_id": 1, "name": "Senso-ji", "latitude": 35.7148, "longitude": 139.7967,
+             "place_id": "sensoji", "neighborhood": "Asakusa", "google_rating": 4.6},
+            {"option_id": 2, "name": "Nakamise", "latitude": 35.7119, "longitude": 139.7966,
+             "place_id": "nakamise", "neighborhood": "Asakusa", "google_rating": 4.3},
+            {"option_id": 3, "name": "Shibuya Crossing", "latitude": 35.6595, "longitude": 139.7004,
+             "place_id": "shibuya", "neighborhood": "Shibuya", "google_rating": 4.5},
+        ]
+
+    def test_stamps_cluster_fields_in_place(self, session):
+        opts = self._options()
+        cluster_and_route(session, opts)
+        by_id = {o["option_id"]: o for o in opts}
+        # The two Asakusa stops share a cluster; Shibuya is its own.
+        assert by_id[1]["cluster_id"] == by_id[2]["cluster_id"]
+        assert by_id[3]["cluster_id"] != by_id[1]["cluster_id"]
+        assert by_id[1]["cluster_name"] == "Asakusa"
+        assert by_id[3]["cluster_name"] == "Shibuya"
+
+    def test_builds_haversine_matrix_between_clusters(self, session):
+        opts = self._options()
+        matrix = cluster_and_route(session, opts)
+        by_id = {o["option_id"]: o for o in opts}
+        asakusa, shibuya = by_id[1]["cluster_id"], by_id[3]["cluster_id"]
+        # Default modes, with inter-cluster legs both directions.
+        assert set(matrix) == {"walk", "drive"}
+        assert matrix["walk"][(asakusa, shibuya)]["duration_seconds"] > 0
+        assert matrix["walk"][(shibuya, asakusa)]["duration_seconds"] > 0
+        # Rows persisted to the cache (one per ordered anchor pair, per mode).
+        assert session.query(RouteCache).count() == 4  # 2 pairs × 2 modes
+
+    def test_options_without_coords_become_singletons_absent_from_matrix(self, session):
+        opts = [
+            {"option_id": 1, "name": "A", "latitude": None, "longitude": None,
+             "place_id": None, "neighborhood": None, "google_rating": None},
+            {"option_id": 2, "name": "B", "latitude": None, "longitude": None,
+             "place_id": None, "neighborhood": None, "google_rating": None},
+        ]
+        matrix = cluster_and_route(session, opts)
+        by_id = {o["option_id"]: o for o in opts}
+        # Each coordinate-less option is its own cluster...
+        assert by_id[1]["cluster_id"] != by_id[2]["cluster_id"]
+        # ...and with no coords/place_id there is nothing to route.
+        assert matrix["walk"] == {}
+        assert matrix["drive"] == {}
+
+    def test_explicit_client_overrides_haversine(self, session):
+        opts = self._options()
+        client = MockRoutesClient(seconds_by_mode={"walk": 1234, "drive": 567})
+        matrix = cluster_and_route(session, opts, client, modes=("walk",))
+        by_id = {o["option_id"]: o for o in opts}
+        asakusa, shibuya = by_id[1]["cluster_id"], by_id[3]["cluster_id"]
+        assert matrix["walk"][(asakusa, shibuya)]["duration_seconds"] == 1234

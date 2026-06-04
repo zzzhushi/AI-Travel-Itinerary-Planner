@@ -229,6 +229,12 @@ def get_rated_options_for_schedule(session: Session, trip_id: int) -> list[dict]
             "user_rating": opt.user_rating,
             "default_duration_minutes": opt.default_duration_minutes,
             "opening_hours": opt.opening_hours,
+            # Places-enrichment fields used by geographic clustering + the
+            # inter-cluster travel matrix (src/services/travel.py). May be None
+            # when an option has not been enriched.
+            "place_id": opt.place_id,
+            "neighborhood": opt.neighborhood,
+            "google_rating": opt.google_rating,
             "is_locked": si.is_locked if si else False,
             "day_number": si.day_number if si else None,
             # Existing placement time — lets build_schedule keep locked items

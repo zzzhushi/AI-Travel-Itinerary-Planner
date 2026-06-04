@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 from typing import Optional, Protocol
 
@@ -25,4 +25,5 @@ class SchedulePlanner(Protocol):
         destination: Optional[str] = None,
         start_date: Optional[date] = None,
         min_rating: int = 1,
+        travel_matrix: Optional[dict[str, dict[tuple[int, int], dict]]] = None,
     ) -> PlanResult: ...

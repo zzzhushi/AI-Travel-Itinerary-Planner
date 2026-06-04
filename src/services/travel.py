@@ -30,7 +30,7 @@ from typing import Optional, Protocol
 from sqlalchemy.orm import Session
 
 from src.db.queries import get_fresh_route_cache, upsert_route
-from src.workers.planner.clustering import Cluster
+from src.workers.planner.clustering import Cluster, ClusterPoint, cluster_points
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +107,68 @@ def select_anchors(
             ClusterAnchor(cluster.cluster_id, place_id_by_option[best], lat, lng)
         )
     return anchors
+
+
+def cluster_and_route(
+    session: Session,
+    options: list[dict],
+    routes_client: Optional[_RoutesClient] = None,
+    *,
+    modes: tuple[str, ...] = DEFAULT_MODES,
+    now: Optional[datetime] = None,
+) -> dict[str, dict[tuple[int, int], Leg]]:
+    """Cluster options, stamp cluster_id/cluster_name onto them, return the matrix.
+
+    The single coordination entry point that ties geometric clustering
+    (`workers.planner.clustering`) to the cached inter-cluster travel matrix:
+
+      1. cluster the options by walking proximity,
+      2. stamp `cluster_id` / `cluster_name` onto each option dict **in place**
+         (so they flow through `build_schedule` into the planner prompt),
+      3. pick one anchor per cluster and compute the K×K travel matrix.
+
+    Options without coordinates each become a singleton cluster; options without
+    a `place_id` cannot be routed and are simply absent from the matrix. When
+    `routes_client` is None (the default), `compute_inter_cluster_matrix`
+    auto-builds a `HaversineRoutesClient` from the anchor coordinates — so the
+    matrix is populated with straight-line estimates without any API billing.
+    """
+    points = [
+        ClusterPoint(
+            option_id=o["option_id"],
+            name=o.get("name", ""),
+            latitude=o.get("latitude"),
+            longitude=o.get("longitude"),
+            neighborhood=o.get("neighborhood"),
+            google_rating=o.get("google_rating"),
+        )
+        for o in options
+    ]
+    clusters = cluster_points(points)
+
+    # Stamp cluster_id / cluster_name onto each option dict in place.
+    cluster_by_option: dict[int, Cluster] = {
+        oid: cluster for cluster in clusters for oid in cluster.member_ids
+    }
+    for o in options:
+        cluster = cluster_by_option.get(o["option_id"])
+        if cluster is not None:
+            o["cluster_id"] = cluster.cluster_id
+            o["cluster_name"] = cluster.name
+
+    place_id_by_option = {o["option_id"]: o.get("place_id") for o in options}
+    rating_by_option = {o["option_id"]: o.get("google_rating") for o in options}
+    coords_by_option = {
+        o["option_id"]: (o["latitude"], o["longitude"])
+        for o in options
+        if o.get("latitude") is not None and o.get("longitude") is not None
+    }
+    anchors = select_anchors(
+        clusters, place_id_by_option, rating_by_option, coords_by_option
+    )
+    return compute_inter_cluster_matrix(
+        session, anchors, routes_client, modes=modes, now=now
+    )
 
 
 def compute_inter_cluster_matrix(
