@@ -28,6 +28,12 @@
                 📍
               </a>
               {% endif %}
+              {% if opt.neighborhood %}
+              <span title="Neighborhood (from Google Places)"
+                    class="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-50 text-indigo-500 whitespace-nowrap flex-shrink-0">
+                {{ opt.neighborhood }}
+              </span>
+              {% endif %}
             </div>
             {% if opt.why %}
             <p class="text-xs text-gray-400 mt-0.5 leading-snug">{{ opt.why }}</p>
