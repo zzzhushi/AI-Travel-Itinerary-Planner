@@ -109,6 +109,8 @@ def build_schedule(
                 or category_default_duration(o.get("category"))
             ),
             opening_hours=o.get("opening_hours"),
+            cluster_id=o.get("cluster_id"),
+            cluster_name=o.get("cluster_name"),
         )
         for o in options
     ]
@@ -153,7 +155,10 @@ class DeterministicPlanner:
         destination: Optional[str] = None,
         start_date: Optional[date] = None,
         min_rating: int = 1,
+        travel_matrix: Optional[dict[str, dict[tuple[int, int], dict]]] = None,
     ) -> PlanResult:
+        # travel_matrix is accepted for SchedulePlanner-interface parity but
+        # unused: the deterministic planner does not reason about travel times.
         day_plans = build_schedule(options, num_days=num_days, min_rating=min_rating)
         for dp in day_plans:
             _fit_day_within_window(dp)

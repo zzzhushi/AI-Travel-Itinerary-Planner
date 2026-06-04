@@ -9,12 +9,18 @@ import json
 
 import pytest
 
+from src.agents.providers import LLMProvider
 from src.workers.planner import (
     DAY_END_MINUTES,
     DAY_START_MINUTES,
     DayPlan,
     LlmPlanner,
     ScheduleItem,
+)
+from src.workers.planner.llm import (
+    PLANNER_INSTRUCTION,
+    _build_prompt,
+    _format_travel_matrix,
 )
 from tests.mocks.provider import MockProvider
 
@@ -43,6 +49,115 @@ def _valid_response(day: int, option_ids: list[int], start: int = 540) -> str:
         for i, oid in enumerate(option_ids)
     ]
     return json.dumps([{"day": day, "items": items}])
+
+
+class _CapturingProvider(LLMProvider):
+    """Records the last prompt it was asked, then returns a canned response."""
+
+    def __init__(self, response: str) -> None:
+        self._response = response
+        self.last_prompt: str = ""
+
+    async def ask(self, prompt: str) -> tuple[str, str]:
+        self.last_prompt = prompt
+        return self._response, ""
+
+
+def _clustered_item(option_id: int, cluster_id: int, cluster_name: str) -> ScheduleItem:
+    return ScheduleItem(
+        option_id=option_id,
+        name=f"Place {option_id}",
+        category="sightseeing",
+        latitude=35.6 + option_id * 0.01,
+        longitude=139.7 + option_id * 0.01,
+        user_rating=4,
+        duration_minutes=120,
+        cluster_id=cluster_id,
+        cluster_name=cluster_name,
+    )
+
+
+class TestFormatTravelMatrix:
+    def test_none_or_empty_renders_nothing(self):
+        assert _format_travel_matrix(None) == ""
+        assert _format_travel_matrix({}) == ""
+        assert _format_travel_matrix({"walk": {}}) == ""
+
+    def test_renders_minutes_per_mode_and_pair(self):
+        matrix = {
+            "walk": {(0, 1): {"duration_seconds": 1500, "distance_meters": 2000}},
+            "drive": {(0, 1): {"duration_seconds": 600, "distance_meters": 2000}},
+        }
+        out = _format_travel_matrix(matrix)
+        assert "walk:" in out and "drive:" in out
+        assert "cluster 0 -> cluster 1: 25 min" in out  # 1500s → 25 min
+        assert "cluster 0 -> cluster 1: 10 min" in out  # 600s → 10 min
+        # The intra-cluster short-walk rule is stated alongside the matrix.
+        assert "same cluster" in out
+
+    def test_skips_legs_with_no_duration(self):
+        matrix = {"walk": {(0, 1): {"duration_seconds": None, "distance_meters": None}}}
+        assert _format_travel_matrix(matrix) == ""
+
+
+class TestBuildPromptClusterFields:
+    def _day_plans(self) -> list[DayPlan]:
+        return [DayPlan(
+            day_number=1,
+            items=[
+                _clustered_item(1, 0, "Asakusa"),
+                _clustered_item(2, 1, "Shibuya"),
+            ],
+        )]
+
+    def test_prompt_includes_cluster_and_coords(self):
+        prompt = _build_prompt(self._day_plans(), "Tokyo")
+        assert '"cluster_id": 0' in prompt
+        assert '"cluster_name": "Asakusa"' in prompt
+        assert '"cluster_name": "Shibuya"' in prompt
+        assert '"latitude":' in prompt
+        assert '"longitude":' in prompt
+
+    def test_prompt_includes_travel_matrix_when_provided(self):
+        matrix = {"walk": {(0, 1): {"duration_seconds": 1500, "distance_meters": 2000}}}
+        prompt = _build_prompt(self._day_plans(), "Tokyo", travel_matrix=matrix)
+        assert "Inter-cluster travel times" in prompt
+        assert "cluster 0 -> cluster 1: 25 min" in prompt
+
+    def test_prompt_omits_matrix_section_when_absent(self):
+        prompt = _build_prompt(self._day_plans(), "Tokyo")
+        assert "Inter-cluster travel times" not in prompt
+
+
+class TestPlannerInstructionCovers:
+    def test_instruction_mentions_clusters_and_matrix(self):
+        assert "cluster_id" in PLANNER_INSTRUCTION
+        assert "inter-cluster travel matrix" in PLANNER_INSTRUCTION.lower()
+
+    def test_instruction_covers_cluster_to_day_and_locked_pull(self):
+        lowered = PLANNER_INSTRUCTION.lower()
+        assert "same day" in lowered           # cluster → day grouping
+        assert "anchor" in lowered             # locked-anchor pull
+
+
+class TestPlanThreadsClusterDataIntoPrompt:
+    @pytest.mark.asyncio
+    async def test_cluster_fields_and_matrix_reach_the_prompt(self):
+        options = [
+            {**_make_options(1)[0], "option_id": 1,
+             "cluster_id": 0, "cluster_name": "Asakusa"},
+            {**_make_options(1)[0], "option_id": 2,
+             "cluster_id": 1, "cluster_name": "Shibuya"},
+        ]
+        matrix = {"walk": {(0, 1): {"duration_seconds": 1500, "distance_meters": 2000}}}
+        provider = _CapturingProvider(_valid_response(1, [1, 2]))
+        planner = LlmPlanner(provider)
+        await planner.plan(
+            options, num_days=1, destination="Tokyo", travel_matrix=matrix
+        )
+        assert '"cluster_name": "Asakusa"' in provider.last_prompt
+        assert '"cluster_name": "Shibuya"' in provider.last_prompt
+        assert "cluster 0 -> cluster 1: 25 min" in provider.last_prompt
 
 
 class TestLlmPlannerHappyPath:

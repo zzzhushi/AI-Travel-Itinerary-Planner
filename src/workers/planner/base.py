@@ -25,4 +25,5 @@ class SchedulePlanner(Protocol):
         destination: Optional[str] = None,
         start_date: Optional[date] = None,
         min_rating: int = 1,
+        travel_matrix: Optional[dict[str, dict[tuple[int, int], dict]]] = None,
     ) -> PlanResult: ...

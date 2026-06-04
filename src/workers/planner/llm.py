@@ -26,14 +26,17 @@ from src.agents.providers import LLMProvider
 
 PLANNER_INSTRUCTION = """You are a travel itinerary planner. You will receive a draft schedule grouped by day, with each day labelled by its actual date and day of week. For each day, assign a realistic start_minutes (minutes from midnight, e.g. 540 = 09:00) to every item, fitting them within the day window (day_start: 540, day_end: 1260 = 21:00).
 
-Each item includes option_id, name, category, duration_minutes (visit length in minutes), user_rating (1–5, higher = more important), current start_minutes, is_locked, and opening_hours (full weekly schedule from Google Places).
+Each item includes option_id, name, category, duration_minutes (visit length in minutes), user_rating (1–5, higher = more important), current start_minutes, is_locked, opening_hours (full weekly schedule from Google Places), cluster_id and cluster_name (the geographic neighbourhood group it belongs to), and latitude/longitude.
+
+You will also receive an inter-cluster travel matrix: one-way travel times (in minutes) between the anchor of each cluster. Stops within the SAME cluster are within walking distance of each other (treat them as a short ~10 minute walk); stops in DIFFERENT clusters cost the matrix travel time. Use this geometry — not the raw coordinates — to reason about travel.
 
 Rules:
-- Schedule items back-to-back with roughly 10–15 minutes travel time between stops.
+- Group by cluster, then assign clusters to days. Items sharing a cluster_id are close together, so keep them on the same day whenever possible and visit them consecutively. Avoid splitting one cluster across multiple days, and avoid hopping back and forth between clusters within a day.
+- Order clusters within a day to minimise total travel: use the inter-cluster matrix to sequence them so you flow through adjacent clusters rather than backtracking. Within a cluster, order stops freely (they are a short walk apart).
+- Account for real travel time between stops. For two consecutive stops in the same cluster, allow ~10 minutes. For consecutive stops in different clusters, allow the matrix travel time between those clusters — this consumes real time and reduces how many stops fit in a day.
+- Locked items (is_locked: true) must keep their current start_minutes and day unchanged. When a locked item anchors a cluster on a given day, prefer pulling that cluster's other unscheduled items onto the same day so the anchor's neighbourhood is covered together.
 - Every item must start within the day window: never schedule an item to start at or after day_end (1260 = 21:00), and do not stack items past it.
 - Fit as many high-priority items as realistically fit within each day's window, and omit the rest — you do NOT need to place every item. Prioritise higher-rated items (5 > 4 > 3); when items don't fit, drop the lowest-rated ones (omit them from the response entirely).
-- Minimise backtracking: group geographically nearby items and order them so travel flows logically through neighbourhoods or districts.
-- Locked items (is_locked: true) must keep their current start_minutes and day unchanged.
 - Use opening_hours (full week) to schedule each item on a day when it is actually open. If an item is on a day it is closed, move it to any other day in the schedule when it is open. Only drop an item if it is closed on every available day or cannot otherwise fit. Do not place an item outside its open hours for the day it is scheduled.
 - If opening_hours is null or unknown, schedule normally without restriction.
 - Order items naturally by time of day: sightseeing/culture/nature early, food/shopping midday, nightlife/dinner in the evening — adjust when geographic flow or opening hours demand it.
@@ -53,10 +56,43 @@ def _day_label(day_number: int, start_date: Optional[date]) -> str:
     return f"Day {day_number} — {day_names[(day_number - 1) % 7]} (assumed)"
 
 
+def _format_travel_matrix(
+    travel_matrix: Optional[dict[str, dict[tuple[int, int], dict]]],
+) -> str:
+    """Render the compact K×K inter-cluster travel matrix as prompt text.
+
+    `travel_matrix` is ``{mode: {(origin_cluster_id, dest_cluster_id): leg}}``
+    where a leg is ``{"duration_seconds", "distance_meters"}`` (the shape returned
+    by `services.travel.compute_inter_cluster_matrix`). Same-cluster and
+    unreachable pairs are already absent. Returns "" when there is nothing to
+    show so callers can omit the section entirely.
+    """
+    if not travel_matrix:
+        return ""
+    blocks: list[str] = []
+    for mode in sorted(travel_matrix):
+        legs = travel_matrix[mode]
+        lines = [
+            f"  cluster {origin} -> cluster {dest}: {round(secs / 60)} min"
+            for (origin, dest) in sorted(legs)
+            if (secs := (legs[(origin, dest)] or {}).get("duration_seconds")) is not None
+        ]
+        if lines:
+            blocks.append(f"{mode}:\n" + "\n".join(lines))
+    if not blocks:
+        return ""
+    return (
+        "\n\nInter-cluster travel times (one-way, minutes between cluster anchors). "
+        "Stops within the same cluster are a short walk (~10 min) and are not listed:\n"
+        + "\n".join(blocks)
+    )
+
+
 def _build_prompt(
     day_plans: list[DayPlan],
     destination: str,
     start_date: Optional[date] = None,
+    travel_matrix: Optional[dict[str, dict[tuple[int, int], dict]]] = None,
 ) -> str:
     input_data = [
         {
@@ -72,6 +108,10 @@ def _build_prompt(
                     "start_minutes": i.start_minutes,
                     "is_locked": i.is_locked,
                     "opening_hours": i.opening_hours,
+                    "cluster_id": i.cluster_id,
+                    "cluster_name": i.cluster_name,
+                    "latitude": i.latitude,
+                    "longitude": i.longitude,
                 }
                 for i in dp.items
             ],
@@ -81,12 +121,15 @@ def _build_prompt(
     return (
         f"Destination: {destination}\n"
         f"Day window: {DAY_START_MINUTES} (09:00) – {DAY_END_MINUTES} (21:00)\n\n"
-        f"Draft schedule:\n{json.dumps(input_data, indent=2)}\n\n"
+        f"Draft schedule:\n{json.dumps(input_data, indent=2)}"
+        f"{_format_travel_matrix(travel_matrix)}\n\n"
         f"Each item's opening_hours is the full weekly schedule from Google Places. "
         f"Use it to verify the item is open on its scheduled day, and move it to a "
         f"different day if it is closed — only drop it if it is closed on every day. "
-        f"Prioritise higher-rated items, minimise geographic backtracking, and "
-        f"add a brief note per item explaining the placement."
+        f"Keep items sharing a cluster_id together and on the same day, sequence "
+        f"clusters using the inter-cluster travel matrix to minimise backtracking, "
+        f"prioritise higher-rated items, and add a brief note per item explaining "
+        f"the placement."
     )
 
 
@@ -101,8 +144,9 @@ class PlannerAgent(LlmAgent):
         day_plans: list[DayPlan],
         destination: str,
         start_date: Optional[date] = None,
+        travel_matrix: Optional[dict[str, dict[tuple[int, int], dict]]] = None,
     ) -> tuple[list[dict], str]:
-        prompt = _build_prompt(day_plans, destination, start_date)
+        prompt = _build_prompt(day_plans, destination, start_date, travel_matrix)
         text, err = await self.ask(prompt)
         if err:
             return [], err.replace("Agent error", "Planner agent error")
@@ -266,10 +310,11 @@ class LlmPlanner:
         destination: Optional[str] = None,
         start_date: Optional[date] = None,
         min_rating: int = 1,
+        travel_matrix: Optional[dict[str, dict[tuple[int, int], dict]]] = None,
     ) -> PlanResult:
         draft = build_schedule(options, num_days=num_days, min_rating=min_rating)
         llm_days, err = await self._agent.generate_plan(
-            draft, destination or "", start_date=start_date
+            draft, destination or "", start_date=start_date, travel_matrix=travel_matrix
         )
         if err:
             return PlanResult([], "llm", f"LLM refinement skipped: {err}")
