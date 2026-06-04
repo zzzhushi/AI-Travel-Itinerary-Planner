@@ -1,7 +1,7 @@
 """Unit tests for deterministic geographic clustering (no network, no DB).
 
 Coordinates are chosen at ~35°N where 0.01° of latitude ≈ 1.11 km, so distances
-are easy to reason about against the default 1.25 km (15-min walk) threshold.
+are easy to reason about against the default 1.67 km (20-min walk) threshold.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from src.workers.planner import (
     haversine_km,
 )
 from src.workers.planner.clustering import (
+    DEFAULT_MAX_DIAMETER_MINUTES,
     DEFAULT_WALK_MINUTES,
     WALK_SPEED_KMH,
     _name_cluster,
@@ -61,9 +62,12 @@ class TestHaversine:
         b = haversine_km(35.2, 139.3, 35.0, 139.0)
         assert a == pytest.approx(b)
 
-    def test_default_threshold_is_1_25_km(self):
-        assert walk_threshold_km() == pytest.approx(1.25)
-        assert walk_threshold_km(DEFAULT_WALK_MINUTES, WALK_SPEED_KMH) == pytest.approx(1.25)
+    def test_default_threshold_(self):
+        assert walk_threshold_km() == pytest.approx(1.6666666666666665)
+        assert walk_threshold_km(DEFAULT_WALK_MINUTES, WALK_SPEED_KMH) == pytest.approx(1.6666666666666665)
+
+    def test_default_diameter_cap_is_2x_link_threshold(self):
+        assert DEFAULT_MAX_DIAMETER_MINUTES == DEFAULT_WALK_MINUTES * 2  # 40 min
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +96,43 @@ class TestClusterGeometry:
         clusters = cluster_points(points)
         assert len(clusters) == 1
         assert clusters[0].member_ids == (1, 2, 3)
+
+    def test_four_point_chain_diameter_cap_enforced(self):
+        # A-B, B-C, C-D each ~1.11 km (within the 1.67 km / 20-min link threshold).
+        # A-D is ~3.33 km ≈ 40 min walk — exceeds the 40-min / 3.34-km diameter cap.
+        # The invariant: A (option_id=1) and D (option_id=4) must not share a cluster.
+        # The exact partition ({A,B,C}+{D} or {A,B}+{C,D}) depends on floating-point
+        # tie-breaking in the pair sort and is not specified here.
+        points = [
+            _point(1, lat=35.000),
+            _point(2, lat=35.010),  # ~1.11 km from A
+            _point(3, lat=35.020),  # ~1.11 km from B, ~2.22 km from A
+            _point(4, lat=35.030),  # ~1.11 km from C, ~3.33 km from A
+        ]
+        clusters = cluster_points(points)
+        # A and D must be in separate clusters.
+        cluster_for = {oid: c.cluster_id for c in clusters for oid in c.member_ids}
+        assert cluster_for[1] != cluster_for[4]
+        # Every cluster must respect the diameter cap (no two members > 2.5 km apart).
+        from src.workers.planner.clustering import walk_threshold_km
+        cap_km = walk_threshold_km(30.0)
+        for c in clusters:
+            pts = [p for p in points if p.option_id in c.member_ids]
+            for a in pts:
+                for b in pts:
+                    assert haversine_km(a.latitude, a.longitude, b.latitude, b.longitude) <= cap_km
+
+    def test_four_point_chain_merges_when_cap_is_relaxed(self):
+        # Same geometry, but with a 60-min diameter cap all four can merge.
+        points = [
+            _point(1, lat=35.000),
+            _point(2, lat=35.010),
+            _point(3, lat=35.020),
+            _point(4, lat=35.030),
+        ]
+        clusters = cluster_points(points, max_diameter_minutes=60.0)
+        assert len(clusters) == 1
+        assert clusters[0].member_ids == (1, 2, 3, 4)
 
     def test_threshold_edge_just_inside_links(self):
         # ~1.11 km apart links at the default 1.25 km threshold...

@@ -9,6 +9,8 @@ from src.workers.planner.base import PlanResult, SchedulePlanner
 from src.workers.planner.clustering import (
     Cluster,
     ClusterPoint,
+    DEFAULT_MAX_DIAMETER_MINUTES,
+    DEFAULT_WALK_MINUTES,
     assign_clusters,
     cluster_points,
     haversine_km,
@@ -35,6 +37,8 @@ __all__ = [
     "cluster_points",
     "assign_clusters",
     "haversine_km",
+    "DEFAULT_WALK_MINUTES",
+    "DEFAULT_MAX_DIAMETER_MINUTES",
     # Result + protocol
     "PlanResult",
     "SchedulePlanner",
