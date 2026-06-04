@@ -169,6 +169,11 @@ class TestPlannerInstructionCovers:
         assert "dinner" in lowered              # evening meal
         assert "21:00" in PLANNER_INSTRUCTION   # use the window to ~21:00
 
+    def test_instruction_forbids_reusing_an_option(self):
+        lowered = PLANNER_INSTRUCTION.lower()
+        assert "at most once" in lowered        # no stop reused across the trip
+        assert "never repeat an option_id" in lowered
+
 
 class TestPlanThreadsClusterDataIntoPrompt:
     @pytest.mark.asyncio

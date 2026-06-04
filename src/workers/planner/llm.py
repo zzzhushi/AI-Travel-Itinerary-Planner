@@ -43,6 +43,7 @@ How to plan:
 
 Then schedule each day:
 - Assign every chosen stop a start_minutes (minutes from midnight, e.g. 540 = 09:00), within the day window (day_start 540, day_end 1260 = 21:00). Never start a stop at or after 1260, and do not stack items past it.
+- Use each stop at most once in the entire trip: never repeat an option_id — not twice in one day, and not on two different days. If you want the same kind of stop again (e.g. another dinner), choose a different option_id.
 - LOCKED items must keep their exact day and start_minutes — they are immovable anchors; schedule everything else around them.
 - Respect opening_hours for the stop's weekday: only place a stop when it is open; if it is closed that day, move it to another day when it is open, or drop it if it is closed every day. If opening_hours is "unknown" or null, schedule freely.
 - Use the whole window: place a lunch near midday and a dinner in the evening (about 18:00–20:00), and keep the day active until ~21:00. Do not leave the hours after 17:00 empty while unscheduled stops remain.
