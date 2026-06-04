@@ -143,6 +143,94 @@ def cmd_research(session, trip) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Command: Enrich options with Places (Maps) data
+# ---------------------------------------------------------------------------
+
+def cmd_enrich(session, trip) -> None:
+    from src.clients.places_client import places_client_from_env
+    from src.services.trip_service import enrich_options_with_places
+
+    client = places_client_from_env()
+    if client is None:
+        console.print("[yellow]GOOGLE_MAPS_API_KEY not set — Maps enrichment is unavailable.[/yellow]")
+        return
+
+    # Force re-fetches every option (ignoring the staleness gate) so newly added
+    # fields like neighborhood are backfilled onto already-enriched options.
+    force = prompt(
+        "Force refresh ALL options (re-fetch even already-enriched)? [y/N]",
+        default="n",
+    ).lower() == "y"
+
+    console.print("\n[bold]Enriching options with Maps data...[/bold]")
+    try:
+        stats = _run(enrich_options_with_places(session, trip, client, force=force))
+    finally:
+        client.close()
+
+    if not (stats["enriched"] or stats["skipped"] or stats["failed"]):
+        console.print(
+            "[yellow]Nothing to enrich — all options are already up to date. "
+            "Use force refresh to re-fetch them.[/yellow]"
+        )
+        return
+
+    console.print(
+        f"[green]Done.[/green] {stats['enriched']} enriched, "
+        f"{stats['skipped']} matched without a place id, {stats['failed']} not found."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Command: Show options (with enriched fields)
+# ---------------------------------------------------------------------------
+
+def _price_label(level: Optional[int]) -> str:
+    """Format a Places price_level (0–4) as Free / $..$$$$, or — when unknown."""
+    if level is None:
+        return "—"
+    return "Free" if level == 0 else "$" * level
+
+
+def cmd_show_options(session, trip) -> None:
+    """Show every option grouped by activity, with its enriched Places fields.
+
+    Useful for validating enrichment (neighborhood, Google rating, price, maps
+    link). Neighborhood and the researcher's location are shown side by side.
+    """
+    from src.db.queries import get_options_for_trip
+
+    activity_options = get_options_for_trip(session, trip.id)
+    if not activity_options:
+        console.print("[yellow]No options yet. Run research first.[/yellow]")
+        return
+
+    for act, options in activity_options:
+        table = Table(title=f"[bold cyan]{act.query}[/bold cyan]", show_lines=False)
+        table.add_column("#", width=3, style="dim")
+        table.add_column("Name", style="bold", min_width=18)
+        table.add_column("Neighborhood", min_width=10)
+        table.add_column("Location", min_width=10)
+        table.add_column("★", width=3)
+        table.add_column("Google", width=6)
+        table.add_column("Price", width=5)
+        table.add_column("Maps", width=4)
+        for i, opt in enumerate(options, 1):
+            # neighborhood column is added in #76; getattr keeps this working on
+            # branches/DBs without it (shows "—" until that lands).
+            neighborhood = getattr(opt, "neighborhood", None) or "—"
+            user_rating = f"★{opt.user_rating}" if opt.user_rating else "—"
+            google = f"{opt.google_rating:.1f}" if opt.google_rating else "—"
+            maps = "✓" if opt.maps_link else "—"
+            table.add_row(
+                str(i), opt.name, neighborhood, opt.location or "—",
+                user_rating, google, _price_label(opt.price_level), maps,
+            )
+        console.print(table)
+    console.print()
+
+
+# ---------------------------------------------------------------------------
 # Command: Rank options
 # ---------------------------------------------------------------------------
 
@@ -403,11 +491,13 @@ def main_menu(session, trip) -> None:
 
         console.print(f"  1. Add activities       ({act_count} total)")
         console.print(f"  2. Research options     {research_tag}")
-        console.print(f"  3. Rank options         {rank_tag}")
-        console.print(f"  4. Re-rank options")
-        console.print(f"  5. Generate itinerary")
-        console.print(f"  6. View trip")
-        console.print(f"  7. Switch trip")
+        console.print(f"  3. Enrich w/ Maps data")
+        console.print(f"  4. Rank options         {rank_tag}")
+        console.print(f"  5. Re-rank options")
+        console.print(f"  6. Generate itinerary")
+        console.print(f"  7. Show options")
+        console.print(f"  8. View trip")
+        console.print(f"  9. Switch trip")
         console.print(f"  0. Exit")
 
         choice = prompt("\nChoice").strip()
@@ -417,14 +507,18 @@ def main_menu(session, trip) -> None:
         elif choice == "2":
             cmd_research(session, trip)
         elif choice == "3":
-            cmd_rank(session, trip, rerank=False)
+            cmd_enrich(session, trip)
         elif choice == "4":
-            cmd_rank(session, trip, rerank=True)
+            cmd_rank(session, trip, rerank=False)
         elif choice == "5":
-            cmd_generate(session, trip)
+            cmd_rank(session, trip, rerank=True)
         elif choice == "6":
-            cmd_view_trip(session, trip)
+            cmd_generate(session, trip)
         elif choice == "7":
+            cmd_show_options(session, trip)
+        elif choice == "8":
+            cmd_view_trip(session, trip)
+        elif choice == "9":
             trip = select_or_create_trip(session)
         elif choice == "0":
             console.print("[dim]Goodbye.[/dim]")

@@ -143,6 +143,21 @@ def get_unenriched_options(session: Session, trip_id: int) -> list[Option]:
     )
 
 
+def get_all_options_for_trip(session: Session, trip_id: int) -> list[Option]:
+    """Return every option for a trip (flat list), ignoring enrichment state.
+
+    Used by force re-enrichment to backfill newly added Places fields (e.g.
+    neighborhood) onto options that were enriched before the field existed.
+    """
+    return (
+        session.query(Option)
+        .join(Activity)
+        .filter(Activity.trip_id == trip_id, Option.name.isnot(None))
+        .order_by(Option.id)
+        .all()
+    )
+
+
 def get_options_for_trip(
     session: Session, trip_id: int
 ) -> list[tuple[Activity, list[Option]]]:

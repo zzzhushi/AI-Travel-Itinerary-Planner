@@ -123,6 +123,35 @@ class TestGetUnenrichedOptions:
 
 
 # ---------------------------------------------------------------------------
+# get_all_options_for_trip — used by force re-enrichment
+# ---------------------------------------------------------------------------
+
+class TestGetAllOptionsForTrip:
+    def test_returns_all_options_regardless_of_enrichment(self, session):
+        from src.db.queries import get_all_options_for_trip
+
+        trip, act = _setup(session)
+        opts = save_options(session, act.id, [_make_option("Enriched"), _make_option("Fresh")])
+        opts[0].place_id = "ChIJx"
+        opts[0].place_refreshed_at = _days_ago(1)  # recent → excluded by the staleness gate
+        session.commit()
+
+        assert {o.name for o in get_all_options_for_trip(session, trip.id)} == {"Enriched", "Fresh"}
+        # Contrast: the default gate excludes the recently-enriched one.
+        assert {o.name for o in get_unenriched_options(session, trip.id)} == {"Fresh"}
+
+    def test_scoped_to_trip(self, session):
+        from src.db.queries import get_all_options_for_trip
+
+        trip1, act1 = _setup(session, "Tokyo")
+        trip2, act2 = _setup(session, "Paris")
+        save_options(session, act1.id, [_make_option("Ramen")])
+        save_options(session, act2.id, [_make_option("Baguette")])
+
+        assert {o.name for o in get_all_options_for_trip(session, trip1.id)} == {"Ramen"}
+
+
+# ---------------------------------------------------------------------------
 # enrich_options_with_places
 # ---------------------------------------------------------------------------
 
@@ -176,6 +205,29 @@ class TestEnrichOptionsWithPlaces:
         assert opt.website == SAMPLE_PLACE["website"]
         assert opt.opening_hours == SAMPLE_PLACE["opening_hours"]
         assert opt.place_refreshed_at is not None
+
+    @pytest.mark.asyncio
+    async def test_force_re_enriches_recent_option(self, session):
+        # A recently-enriched option is skipped by default, but force=True
+        # re-fetches it — used to backfill newly added Places fields.
+        trip, act = _setup(session)
+        opts = save_options(session, act.id, [_make_option()])
+        opt = opts[0]
+        opt.place_id = "ChIJold"
+        opt.place_refreshed_at = _days_ago(1)  # recent → default path skips it
+        session.commit()
+
+        client = MockPlacesClient(return_data=SAMPLE_PLACE)
+
+        default_stats = await enrich_options_with_places(session, trip, client)
+        assert default_stats == {"enriched": 0, "skipped": 0, "failed": 0}
+        assert client.calls == []  # skipped by the staleness gate
+
+        forced_stats = await enrich_options_with_places(session, trip, client, force=True)
+        session.refresh(opt)
+        assert forced_stats["enriched"] == 1
+        assert len(client.calls) == 1
+        assert opt.place_id == SAMPLE_PLACE["place_id"]  # re-fetched (was "ChIJold")
 
     @pytest.mark.asyncio
     async def test_formatted_address_overwrites_original(self, session):
