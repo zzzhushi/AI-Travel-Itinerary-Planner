@@ -19,6 +19,7 @@ from src.services.orchestrator import generate_schedule, research_batch
 from src.workers.planner import PlanResult
 from src.db.models import Trip
 from src.db.queries import (
+    get_all_options_for_trip,
     get_rated_options_for_schedule,
     get_unenriched_options,
     get_unresearched_activities,
@@ -88,19 +89,29 @@ async def enrich_options_with_places(
     session: Session,
     trip: Trip,
     places_client: Optional[PlacesClient] = None,
+    force: bool = False,
 ) -> dict:
-    """Enrich unenriched Options for a trip with data from the Places API.
+    """Enrich Options for a trip with data from the Places API.
 
-    Picks up options where place_refreshed_at IS NULL and maps_search is set.
+    By default picks up only options needing enrichment (never enriched, stale,
+    or failed past the retry window — see get_unenriched_options). With
+    force=True, re-enriches every option for the trip, ignoring the staleness
+    gate — used to backfill newly added Places fields (e.g. neighborhood) onto
+    options enriched before the field existed.
+
     Sets place_refreshed_at on every processed option (even on lookup failure)
-    so re-runs skip already-attempted options.
+    so non-forced re-runs skip already-attempted options.
 
     Returns {"enriched": int, "skipped": int, "failed": int}.
     """
     if places_client is None:
         return {"enriched": 0, "skipped": 0, "failed": 0}
 
-    options = get_unenriched_options(session, trip.id)
+    options = (
+        get_all_options_for_trip(session, trip.id)
+        if force
+        else get_unenriched_options(session, trip.id)
+    )
     if not options:
         return {"enriched": 0, "skipped": 0, "failed": 0}
 
