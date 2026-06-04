@@ -8,12 +8,18 @@ from typing import Optional
 from sqlalchemy import and_, case, or_
 from sqlalchemy.orm import Session
 
-from src.db.models import Activity, Option, ScheduledItem, Trip
+from src.db.models import Activity, Option, RouteCache, ScheduledItem, Trip
 
 # Google ToS allows caching place data for up to 30 days.
 PLACES_STALE_DAYS = 30
 # Failed lookups (place_id IS NULL but already attempted) are retried after this many days.
 PLACES_RETRY_DAYS = 7
+
+# Travel times change slowly; cache inter-cluster legs for up to 30 days.
+ROUTES_STALE_DAYS = 30
+# A cached "no route found" (NULL duration) is retried after this many days,
+# preventing both repeated API calls and infinite retries (mirrors places).
+ROUTES_RETRY_DAYS = 7
 
 
 def get_trips(session: Session) -> list[Trip]:
@@ -277,3 +283,102 @@ def get_schedule(session: Session, trip_id: int) -> list[ScheduledItem]:
         )
         .all()
     )
+
+
+# ---------------------------------------------------------------------------
+# route_cache — inter-cluster travel-time cache
+# ---------------------------------------------------------------------------
+
+def _naive_utcnow() -> datetime:
+    """Naive UTC now, matching the tz-naive DateTime columns in the DB."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def route_is_fresh(row: RouteCache, now: Optional[datetime] = None) -> bool:
+    """True when a cached route is still usable (should not be re-fetched).
+
+    Mirrors the Places staleness rule:
+    - A successful row (duration_seconds set) is fresh until ROUTES_STALE_DAYS.
+    - A failed/unreachable row (duration_seconds IS NULL) is fresh only until the
+      shorter ROUTES_RETRY_DAYS window, then re-attempted.
+    """
+    now = now or _naive_utcnow()
+    age = now - row.refreshed_at
+    if row.duration_seconds is None:
+        return age < timedelta(days=ROUTES_RETRY_DAYS)
+    return age < timedelta(days=ROUTES_STALE_DAYS)
+
+
+def get_fresh_route_cache(
+    session: Session,
+    mode: str,
+    place_ids: list[str],
+    now: Optional[datetime] = None,
+) -> dict[tuple[str, str], RouteCache]:
+    """Return fresh cached routes among the given place_ids for one mode.
+
+    Keyed by (origin_place_id, dest_place_id). Only rows still within their
+    staleness window (see route_is_fresh) are included, so a caller can treat a
+    missing key as "needs (re-)fetching". Restricting both endpoints to the
+    supplied place_ids keeps the scan to the K×K anchor set.
+    """
+    if not place_ids:
+        return {}
+    now = now or _naive_utcnow()
+    ids = set(place_ids)
+    rows = (
+        session.query(RouteCache)
+        .filter(
+            RouteCache.mode == mode,
+            RouteCache.origin_place_id.in_(ids),
+            RouteCache.dest_place_id.in_(ids),
+        )
+        .all()
+    )
+    return {
+        (row.origin_place_id, row.dest_place_id): row
+        for row in rows
+        if route_is_fresh(row, now)
+    }
+
+
+def upsert_route(
+    session: Session,
+    origin_place_id: str,
+    dest_place_id: str,
+    mode: str,
+    leg: Optional[dict],
+    now: Optional[datetime] = None,
+) -> None:
+    """Insert or refresh a single cached route leg (no commit — caller commits).
+
+    `leg` is a {"duration_seconds", "distance_meters"} dict for a reachable pair,
+    or None to cache a confirmed-unreachable / failed lookup (NULL duration).
+    """
+    now = now or _naive_utcnow()
+    duration = leg.get("duration_seconds") if leg else None
+    distance = leg.get("distance_meters") if leg else None
+    row = (
+        session.query(RouteCache)
+        .filter_by(
+            origin_place_id=origin_place_id,
+            dest_place_id=dest_place_id,
+            mode=mode,
+        )
+        .one_or_none()
+    )
+    if row is None:
+        session.add(
+            RouteCache(
+                origin_place_id=origin_place_id,
+                dest_place_id=dest_place_id,
+                mode=mode,
+                duration_seconds=duration,
+                distance_meters=distance,
+                refreshed_at=now,
+            )
+        )
+    else:
+        row.duration_seconds = duration
+        row.distance_meters = distance
+        row.refreshed_at = now
