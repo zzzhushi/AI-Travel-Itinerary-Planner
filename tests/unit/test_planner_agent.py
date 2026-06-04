@@ -109,13 +109,36 @@ class TestBuildPromptClusterFields:
             ],
         )]
 
-    def test_prompt_includes_cluster_and_coords(self):
+    def test_prompt_groups_candidates_by_cluster_with_centroid(self):
         prompt = _build_prompt(self._day_plans(), "Tokyo")
-        assert '"cluster_id": 0' in prompt
-        assert '"cluster_name": "Asakusa"' in prompt
-        assert '"cluster_name": "Shibuya"' in prompt
-        assert '"latitude":' in prompt
-        assert '"longitude":' in prompt
+        # Candidates are grouped under cluster headers (not a per-day JSON dump).
+        assert "Cluster 0 — Asakusa" in prompt
+        assert "Cluster 1 — Shibuya" in prompt
+        assert "opt 1:" in prompt
+        assert "opt 2:" in prompt
+        assert "(~35." in prompt  # cluster centroid coords rendered
+        # The misleading round-robin draft bins are gone.
+        assert "Draft schedule" not in prompt
+
+    def test_prompt_shows_no_locks_hint_when_none_locked(self):
+        prompt = _build_prompt(self._day_plans(), "Tokyo")
+        assert "Locked anchors: none" in prompt
+
+    def test_prompt_lists_locked_items_as_anchors(self):
+        items = [
+            ScheduleItem(
+                option_id=1, name="Senso-ji", category="culture",
+                latitude=35.71, longitude=139.79, user_rating=5,
+                is_locked=True, day_number=2, start_minutes=600,
+                duration_minutes=120, cluster_id=0, cluster_name="Asakusa",
+            ),
+            _clustered_item(2, 1, "Shibuya"),
+        ]
+        prompt = _build_prompt([DayPlan(day_number=1, items=items)], "Tokyo")
+        assert "Locked anchors (FIXED" in prompt
+        assert 'opt 1 "Senso-ji" → day 2, 10:00, cluster 0' in prompt
+        # Locked items are also tagged inline within their cluster.
+        assert "[LOCKED day 2 @ 10:00]" in prompt
 
     def test_prompt_includes_travel_matrix_when_provided(self):
         matrix = {"walk": {(0, 1): {"duration_seconds": 1500, "distance_meters": 2000}}}
@@ -133,10 +156,13 @@ class TestPlannerInstructionCovers:
         assert "cluster_id" in PLANNER_INSTRUCTION
         assert "inter-cluster travel matrix" in PLANNER_INSTRUCTION.lower()
 
-    def test_instruction_covers_cluster_to_day_and_locked_pull(self):
+    def test_instruction_covers_travel_selectivity_and_durations(self):
         lowered = PLANNER_INSTRUCTION.lower()
-        assert "same day" in lowered           # cluster → day grouping
-        assert "anchor" in lowered             # locked-anchor pull
+        assert "same day" in lowered            # cluster grouping
+        assert "anchor" in lowered              # anchor-per-day
+        assert "total travel" in lowered        # minimise total travel
+        assert "drop" in lowered                # selectivity (drop low-rated)
+        assert "honor them as fact" in lowered  # durations are the user's choice
 
 
 class TestPlanThreadsClusterDataIntoPrompt:
@@ -154,8 +180,8 @@ class TestPlanThreadsClusterDataIntoPrompt:
         await planner.plan(
             options, num_days=1, destination="Tokyo", travel_matrix=matrix
         )
-        assert '"cluster_name": "Asakusa"' in provider.last_prompt
-        assert '"cluster_name": "Shibuya"' in provider.last_prompt
+        assert "Cluster 0 — Asakusa" in provider.last_prompt
+        assert "Cluster 1 — Shibuya" in provider.last_prompt
         assert "cluster 0 -> cluster 1: 25 min" in provider.last_prompt
 
 
