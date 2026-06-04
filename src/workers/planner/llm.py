@@ -37,7 +37,7 @@ How to plan:
 1. Minimise total travel; group by area. A day may span up to ~3 clusters, but every move between clusters costs the matrix travel time and eats the day. Sequence a day's clusters so you flow through adjacent areas in one direction — never backtrack (no A→B→A). Crossing the city is worth it for a high-priority stop, not for a low-rated one; balance the best stops against wasted back-and-forth.
 2. Keep clusters together. Stops sharing a cluster_id go on the same day and are visited consecutively; only split a cluster when it has more good stops than fit in one day.
 3. Anchor each day. If a day has LOCKED items, its area is fixed — build around them and pull in their cluster's other stops. If nothing is locked, pick the highest-rated major attraction (sightseeing/culture/nature) in an area as that day's anchor, then add nearby stops.
-4. Be selective. The day window plus travel time caps how much fits — do not exceed it (a typical day is a handful of stops). Prioritise rating 5 > 4 > 3; drop rating ≤ 2 stops unless they are already in a cluster you are visiting and you have spare time. Never detour or add travel for a low-rated stop.
+4. Fill the day; don't pad pointlessly. Keep placing stops through the evening — aim to use the window to roughly 20:00–21:00, not just the morning and afternoon. An empty evening is a wasted day: when a day's obvious stops are placed and time still remains before 21:00, pull in the next-best nearby stops (moving into an adjacent cluster is fine) rather than stopping early. Prioritise rating 5 > 4 > 3, but to fill the evening prefer a lower-rated nearby stop over leaving hours empty — only skip a stop when it would need a long detour for little payoff.
 5. Budget real travel. Between two stops in the same cluster allow ~10 min; between stops in different clusters allow the matrix travel time. Subtract it from the day.
 6. Durations are the user's choice — honor them as fact. Schedule each stop for exactly its given duration_minutes; never shorten or lengthen it to be "realistic" (if a theme park is set to 30 min, use 30 min).
 
@@ -45,6 +45,7 @@ Then schedule each day:
 - Assign every chosen stop a start_minutes (minutes from midnight, e.g. 540 = 09:00), within the day window (day_start 540, day_end 1260 = 21:00). Never start a stop at or after 1260, and do not stack items past it.
 - LOCKED items must keep their exact day and start_minutes — they are immovable anchors; schedule everything else around them.
 - Respect opening_hours for the stop's weekday: only place a stop when it is open; if it is closed that day, move it to another day when it is open, or drop it if it is closed every day. If opening_hours is "unknown" or null, schedule freely.
+- Use the whole window: place a lunch near midday and a dinner in the evening (about 18:00–20:00), and keep the day active until ~21:00. Do not leave the hours after 17:00 empty while unscheduled stops remain.
 - Order each day by time of day and geographic flow: sightseeing/culture/nature earlier, food/shopping midday, nightlife/dinner in the evening — adjust for opening hours and to avoid backtracking.
 
 Respond with a JSON array of days, each with:

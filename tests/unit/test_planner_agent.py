@@ -161,8 +161,13 @@ class TestPlannerInstructionCovers:
         assert "same day" in lowered            # cluster grouping
         assert "anchor" in lowered              # anchor-per-day
         assert "total travel" in lowered        # minimise total travel
-        assert "drop" in lowered                # selectivity (drop low-rated)
         assert "honor them as fact" in lowered  # durations are the user's choice
+
+    def test_instruction_pushes_to_fill_the_evening(self):
+        lowered = PLANNER_INSTRUCTION.lower()
+        assert "fill the day" in lowered        # don't quit mid-afternoon
+        assert "dinner" in lowered              # evening meal
+        assert "21:00" in PLANNER_INSTRUCTION   # use the window to ~21:00
 
 
 class TestPlanThreadsClusterDataIntoPrompt:
