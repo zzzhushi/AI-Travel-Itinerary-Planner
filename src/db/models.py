@@ -15,6 +15,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -194,3 +195,49 @@ class ScheduledItem(Base):
 
     def __repr__(self) -> str:
         return f"<ScheduledItem id={self.id} option_id={self.option_id} day={self.day_number} slot={self.time_slot}>"
+
+
+# Travel modes used as the third key of route_cache. Kept lowercase and decoupled
+# from the Google Routes API enum strings (WALK/DRIVE/TRANSIT), which the
+# RoutesClient maps internally.
+ROUTE_MODES = ["walk", "drive", "transit"]
+
+
+class RouteCache(Base):
+    """
+    Cached travel time/distance between two places for one travel mode.
+
+    Keyed by (origin_place_id, dest_place_id, mode). Only inter-cluster *anchor*
+    pairs are ever stored — a K×K matrix (K≈4–6), never the full N×N of options.
+    Intra-cluster travel is treated as a short walk and never stored here.
+
+    Mirrors the Places staleness pattern (see ROUTES_STALE_DAYS /
+    ROUTES_RETRY_DAYS in db/queries.py): refreshed_at gates re-fetching, and a
+    row with NULL duration_seconds is a cached "no route found" / failed lookup
+    that is retried only after the shorter retry window — preventing both
+    repeated API calls within the staleness window and infinite retries.
+    """
+
+    __tablename__ = "route_cache"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    origin_place_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    dest_place_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    # One of ROUTE_MODES ("walk" | "drive" | "transit").
+    mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    # NULL duration = a confirmed unreachable pair or a failed lookup (see above).
+    duration_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    distance_meters: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    refreshed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint(
+            "origin_place_id", "dest_place_id", "mode", name="uq_route_cache_key"
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<RouteCache {self.origin_place_id}->{self.dest_place_id} "
+            f"mode={self.mode} dur={self.duration_seconds}s>"
+        )
