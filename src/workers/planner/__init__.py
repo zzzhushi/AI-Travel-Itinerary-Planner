@@ -6,6 +6,13 @@ strategy classes instead.
 """
 
 from src.workers.planner.base import PlanResult, SchedulePlanner
+from src.workers.planner.clustering import (
+    Cluster,
+    ClusterPoint,
+    assign_clusters,
+    cluster_points,
+    haversine_km,
+)
 from src.workers.planner.deterministic import DeterministicPlanner
 from src.workers.planner.llm import LlmPlanner, PLANNER_INSTRUCTION
 from src.workers.planner.types import (
@@ -22,6 +29,12 @@ __all__ = [
     # Domain types
     "ScheduleItem",
     "DayPlan",
+    # Geographic clustering
+    "ClusterPoint",
+    "Cluster",
+    "cluster_points",
+    "assign_clusters",
+    "haversine_km",
     # Result + protocol
     "PlanResult",
     "SchedulePlanner",
