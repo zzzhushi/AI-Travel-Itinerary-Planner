@@ -9,6 +9,7 @@ so the coordinator can retry with the DeterministicPlanner.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date, timedelta
 from typing import Optional
 
@@ -23,6 +24,8 @@ from src.workers.planner.types import (
     category_default_duration,
 )
 from src.agents.providers import LLMProvider
+
+logger = logging.getLogger(__name__)
 
 PLANNER_INSTRUCTION = """You are a travel itinerary planner. You will receive a draft schedule grouped by day, with each day labelled by its actual date and day of week. For each day, assign a realistic start_minutes (minutes from midnight, e.g. 540 = 09:00) to every item, fitting them within the day window (day_start: 540, day_end: 1260 = 21:00).
 
@@ -118,7 +121,7 @@ def _build_prompt(
         }
         for dp in day_plans
     ]
-    return (
+    prompt =  (
         f"Destination: {destination}\n"
         f"Day window: {DAY_START_MINUTES} (09:00) – {DAY_END_MINUTES} (21:00)\n\n"
         f"Draft schedule:\n{json.dumps(input_data, indent=2)}"
@@ -131,6 +134,10 @@ def _build_prompt(
         f"prioritise higher-rated items, and add a brief note per item explaining "
         f"the placement."
     )
+
+    logger.warning(prompt)
+
+    return prompt
 
 
 class PlannerAgent(LlmAgent):
