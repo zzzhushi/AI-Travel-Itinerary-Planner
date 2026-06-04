@@ -204,16 +204,18 @@ class TestEnrichOptionsWithPlaces:
         assert opt.phone_number == SAMPLE_PLACE["phone_number"]
         assert opt.website == SAMPLE_PLACE["website"]
         assert opt.opening_hours == SAMPLE_PLACE["opening_hours"]
+        assert opt.neighborhood == SAMPLE_PLACE["neighborhood"]
         assert opt.place_refreshed_at is not None
 
     @pytest.mark.asyncio
     async def test_force_re_enriches_recent_option(self, session):
         # A recently-enriched option is skipped by default, but force=True
-        # re-fetches it — used to backfill newly added Places fields.
+        # re-fetches it — used to backfill newly added Places fields like neighborhood.
         trip, act = _setup(session)
         opts = save_options(session, act.id, [_make_option()])
         opt = opts[0]
         opt.place_id = "ChIJold"
+        opt.neighborhood = None
         opt.place_refreshed_at = _days_ago(1)  # recent → default path skips it
         session.commit()
 
@@ -228,6 +230,21 @@ class TestEnrichOptionsWithPlaces:
         assert forced_stats["enriched"] == 1
         assert len(client.calls) == 1
         assert opt.place_id == SAMPLE_PLACE["place_id"]  # re-fetched (was "ChIJold")
+        assert opt.neighborhood == SAMPLE_PLACE["neighborhood"]  # backfilled
+
+    @pytest.mark.asyncio
+    async def test_missing_neighborhood_stays_null(self, session):
+        # Places result without a neighborhood → column stays NULL.
+        trip, act = _setup(session)
+        opts = save_options(session, act.id, [_make_option()])
+        opt = opts[0]
+
+        place_no_hood = {**SAMPLE_PLACE, "neighborhood": None}
+        client = MockPlacesClient(return_data=place_no_hood)
+        await enrich_options_with_places(session, trip, client)
+
+        session.refresh(opt)
+        assert opt.neighborhood is None
 
     @pytest.mark.asyncio
     async def test_formatted_address_overwrites_original(self, session):

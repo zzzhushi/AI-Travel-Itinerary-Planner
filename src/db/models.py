@@ -140,6 +140,9 @@ class Option(Base):
     default_duration_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     # Fields populated by Places API enrichment (all nullable — enrichment is best-effort)
     place_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # Neighborhood / sublocality (e.g. "Shinjuku") parsed from Places
+    # addressComponents; used to name geographic clusters when scheduling.
+    neighborhood: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     google_rating: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     price_level: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     phone_number: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)

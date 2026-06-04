@@ -32,6 +32,11 @@ _FIELD_MASK = ",".join([
     "places.internationalPhoneNumber",
     "places.websiteUri",
     "places.regularOpeningHours",
+    # addressComponents carries the neighborhood / sublocality (e.g. "Shinjuku"),
+    # used to name geographic clusters when scheduling. It sits in a lower billing
+    # tier than the rating / opening-hours fields already requested above, so it
+    # does not raise the Text Search SKU tier (billing = highest tier requested).
+    "places.addressComponents",
 ])
 
 
@@ -63,8 +68,8 @@ class PlacesClient:
         """Resolve a search string to a place dict, or None on no-match / error.
 
         Returns a dict with keys: place_id, latitude, longitude, maps_link,
-        formatted_address, google_rating, price_level, phone_number, website,
-        opening_hours (JSON-encoded weekday strings list).
+        formatted_address, neighborhood, google_rating, price_level,
+        phone_number, website, opening_hours (JSON-encoded weekday strings list).
         """
         if not maps_search:
             return None
@@ -114,12 +119,45 @@ def _parse_place(place: dict) -> dict:
         "longitude": location.get("longitude"),
         "maps_link": place.get("googleMapsUri"),
         "formatted_address": place.get("formattedAddress"),
+        "neighborhood": _parse_neighborhood(place.get("addressComponents")),
         "google_rating": place.get("rating"),
         "price_level": _parse_price_level(place.get("priceLevel")),
         "phone_number": place.get("internationalPhoneNumber"),
         "website": place.get("websiteUri"),
         "opening_hours": json.dumps(weekday_descriptions) if weekday_descriptions else None,
     }
+
+
+# Address-component types that name a neighborhood, most specific first. Google
+# tags wards/districts (e.g. Tokyo's "Shinjuku") as sublocality_level_1, while a
+# true "neighborhood" type is rarer — so we prefer the former where present.
+_NEIGHBORHOOD_TYPES = (
+    "neighborhood",
+    "sublocality_level_1",
+    "sublocality",
+    "sublocality_level_2",
+)
+
+
+def _parse_neighborhood(components: Optional[list]) -> Optional[str]:
+    """Pick the most specific neighborhood-like name from Places addressComponents.
+
+    Each component carries a `types` list (e.g. ["sublocality_level_1",
+    "sublocality", "political"]). We map type → text (first occurrence wins) and
+    return the highest-priority match per _NEIGHBORHOOD_TYPES, or None if the
+    response carried no neighborhood-like component.
+    """
+    text_by_type: dict[str, str] = {}
+    for comp in components or []:
+        text = comp.get("longText") or comp.get("shortText")
+        if not text:
+            continue
+        for type_name in comp.get("types") or []:
+            text_by_type.setdefault(type_name, text)
+    for type_name in _NEIGHBORHOOD_TYPES:
+        if type_name in text_by_type:
+            return text_by_type[type_name]
+    return None
 
 
 def _parse_price_level(value: Optional[str]) -> Optional[int]:

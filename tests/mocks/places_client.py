@@ -12,6 +12,7 @@ SAMPLE_PLACE = {
     "longitude": 139.7034,
     "maps_link": "https://maps.google.com/?cid=test",
     "formatted_address": "1-2-3 Shinjuku, Shinjuku City, Tokyo",
+    "neighborhood": "Shinjuku",
     "google_rating": 4.3,
     "price_level": 2,
     "phone_number": "+81 3-1234-5678",

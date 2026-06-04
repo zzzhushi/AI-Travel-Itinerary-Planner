@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from src.clients.places_client import _parse_place, _parse_price_level
+from src.clients.places_client import _parse_neighborhood, _parse_place, _parse_price_level
 from tests.mocks.places_client import MockPlacesClient, SAMPLE_PLACE
 
 
@@ -70,6 +70,12 @@ class TestParsePlace:
             "regularOpeningHours": {
                 "weekdayDescriptions": ["Monday: 11:00 AM – 11:00 PM"]
             },
+            "addressComponents": [
+                {"longText": "Shinjuku", "shortText": "Shinjuku",
+                 "types": ["sublocality_level_1", "sublocality", "political"]},
+                {"longText": "Tokyo", "shortText": "Tokyo",
+                 "types": ["locality", "political"]},
+            ],
         }
         base.update(overrides)
         return base
@@ -87,6 +93,7 @@ class TestParsePlace:
         assert result["price_level"] == 2
         assert result["phone_number"] == "+81 3-1234-5678"
         assert result["website"] == "https://example.com"
+        assert result["neighborhood"] == "Shinjuku"
         assert json.loads(result["opening_hours"]) == ["Monday: 11:00 AM – 11:00 PM"]
 
     def test_missing_optional_fields_return_none(self):
@@ -100,6 +107,7 @@ class TestParsePlace:
         assert result["phone_number"] is None
         assert result["website"] is None
         assert result["opening_hours"] is None
+        assert result["neighborhood"] is None
 
     def test_empty_opening_hours_returns_none(self):
         place = self._make_api_place(regularOpeningHours={"weekdayDescriptions": []})
@@ -111,3 +119,45 @@ class TestParsePlace:
         result = _parse_place(place)
         assert result["latitude"] is None
         assert result["longitude"] is None
+
+
+class TestParseNeighborhood:
+    def test_prefers_explicit_neighborhood_type(self):
+        # An explicit "neighborhood" outranks a sublocality on the same response.
+        components = [
+            {"longText": "Shinjuku", "types": ["sublocality_level_1", "sublocality"]},
+            {"longText": "Kabukicho", "types": ["neighborhood"]},
+        ]
+        assert _parse_neighborhood(components) == "Kabukicho"
+
+    def test_falls_back_to_sublocality_level_1(self):
+        # Tokyo wards arrive as sublocality_level_1 with no explicit neighborhood.
+        components = [
+            {"longText": "Shinjuku", "types": ["sublocality_level_1", "sublocality", "political"]},
+            {"longText": "Tokyo", "types": ["locality", "political"]},
+        ]
+        assert _parse_neighborhood(components) == "Shinjuku"
+
+    def test_uses_long_text_over_short_text(self):
+        components = [{"longText": "Shinjuku City", "shortText": "Shinjuku", "types": ["sublocality"]}]
+        assert _parse_neighborhood(components) == "Shinjuku City"
+
+    def test_no_neighborhood_like_component_returns_none(self):
+        components = [
+            {"longText": "Tokyo", "types": ["locality", "political"]},
+            {"longText": "Japan", "types": ["country", "political"]},
+        ]
+        assert _parse_neighborhood(components) is None
+
+    def test_empty_or_missing_returns_none(self):
+        assert _parse_neighborhood([]) is None
+        assert _parse_neighborhood(None) is None
+
+    def test_skips_components_without_text(self):
+        # First component is neighborhood-typed but has no text → skipped; the
+        # sublocality fallback supplies the name instead.
+        components = [
+            {"types": ["neighborhood"]},
+            {"longText": "Shinjuku", "types": ["sublocality_level_1"]},
+        ]
+        assert _parse_neighborhood(components) == "Shinjuku"
