@@ -58,6 +58,11 @@ class ScheduleItem:
     duration_minutes: Optional[int] = None
     note: Optional[str] = None            # LLM placement rationale
     opening_hours: Optional[str] = None   # raw Places API hours string
+    # Geographic cluster this item belongs to, stamped by the clustering pass
+    # (src/workers/planner/clustering.py). cluster_id is a per-trip index;
+    # cluster_name is the modal-neighborhood label. Both None until clustered.
+    cluster_id: Optional[int] = None
+    cluster_name: Optional[str] = None
 
 
 @dataclass
