@@ -497,3 +497,79 @@ def test_patch_schedule_item_missing_returns_404(client, db_factory):
     r = client.patch(f"/trips/{trip_id}/schedule/99999",
                      data={"start_minutes": "600"})
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Preferences
+# ---------------------------------------------------------------------------
+
+def test_preferences_panel_renders(client, db_factory):
+    trip_id = _make_trip(db_factory)
+    r = client.get(f"/trips/{trip_id}/preferences")
+    assert r.status_code == 200
+    assert 'id="preferences-panel"' in r.text
+    assert 'name="pace"' in r.text
+
+
+def test_preferences_tab_renders(client, db_factory):
+    trip_id = _make_trip(db_factory)
+    r = client.get(f"/trips/{trip_id}/tabs/preferences")
+    assert r.status_code == 200
+    assert 'id="preferences-panel"' in r.text
+
+
+def test_preferences_panel_missing_trip_404(client):
+    r = client.get("/trips/99999/preferences")
+    assert r.status_code == 404
+
+
+def test_update_preference_persists(client, db_factory):
+    trip_id = _make_trip(db_factory)
+    r = client.patch(f"/trips/{trip_id}/preferences", data={"pace": "relaxed"})
+    assert r.status_code == 200
+    # Re-rendered panel shows the saved value selected.
+    with db_factory() as s:
+        from src.db.queries import get_or_create_preferences
+        assert get_or_create_preferences(s, trip_id).pace == "relaxed"
+
+
+def test_update_preference_rejects_invalid_enum(client, db_factory):
+    trip_id = _make_trip(db_factory)
+    client.patch(f"/trips/{trip_id}/preferences", data={"pace": "relaxed"})
+    client.patch(f"/trips/{trip_id}/preferences", data={"pace": "bogus"})
+    with db_factory() as s:
+        from src.db.queries import get_or_create_preferences
+        assert get_or_create_preferences(s, trip_id).pace is None
+
+
+def test_update_preference_missing_trip_404(client):
+    r = client.patch("/trips/99999/preferences", data={"pace": "relaxed"})
+    assert r.status_code == 404
+
+
+def test_reset_research_route_runs_and_returns_spinner(client, db_factory, monkeypatch):
+    trip_id = _make_trip(db_factory)
+    with db_factory() as s:
+        act = add_activity(s, trip_id, "ramen", "food", False)
+        save_options(s, act.id, [{"name": "Place 1"}])
+
+    def fake_runner(tid, job):
+        job.result = []
+        job.done = True
+
+    monkeypatch.setattr(webapp, "_run_research_and_enrich_background", fake_runner)
+    monkeypatch.setattr(webapp, "threading", _FakeThreading)
+
+    r = client.post(f"/trips/{trip_id}/preferences/reset-research")
+    assert r.status_code == 200
+    assert 'id="research-status"' in r.text
+    # reset_research_state ran: options cleared.
+    with db_factory() as s:
+        from src.db.models import Option, Activity
+        act_id = s.query(Activity).filter(Activity.trip_id == trip_id).first().id
+        assert s.query(Option).filter(Option.activity_id == act_id).count() == 0
+
+
+def test_reset_research_missing_trip_404(client):
+    r = client.post("/trips/99999/preferences/reset-research")
+    assert r.status_code == 404

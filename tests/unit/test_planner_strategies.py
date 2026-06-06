@@ -10,7 +10,8 @@ import json
 import pytest
 
 from src.services.orchestrator import generate_schedule
-from src.workers.planner import DAY_END_MINUTES, PlanResult
+from src.workers.planner import DAY_END_MINUTES, DeterministicPlanner, PlanResult
+from src.workers.preferences import Preferences
 from tests.mocks.provider import MockProvider
 
 
@@ -107,3 +108,40 @@ class TestGenerateScheduleCoordinator:
         for dp in result.day_plans:
             for item in dp.items:
                 assert item.start_minutes < DAY_END_MINUTES
+
+
+class TestDeterministicHonorsWindow:
+    @pytest.mark.asyncio
+    async def test_items_start_at_custom_day_start(self):
+        prefs = Preferences(day_start_minutes=660, day_end_minutes=1140)  # 11:00–19:00
+        result = await DeterministicPlanner().plan(
+            _options(3), num_days=1, min_rating=1, preferences=prefs
+        )
+        starts = [i.start_minutes for dp in result.day_plans for i in dp.items]
+        assert starts  # something got scheduled
+        assert min(starts) >= 660            # first stop at/after the custom start
+        assert all(s < 1140 for s in starts)  # nothing past the custom end
+
+    @pytest.mark.asyncio
+    async def test_tighter_window_fits_fewer_items(self):
+        opts = _options(10, duration=120)
+        wide = await DeterministicPlanner().plan(opts, num_days=1, min_rating=1)
+        narrow = await DeterministicPlanner().plan(
+            opts, num_days=1, min_rating=1,
+            preferences=Preferences(day_start_minutes=600, day_end_minutes=900),  # 3h
+        )
+        wide_n = sum(len(dp.items) for dp in wide.day_plans)
+        narrow_n = sum(len(dp.items) for dp in narrow.day_plans)
+        assert narrow_n < wide_n
+
+    @pytest.mark.asyncio
+    async def test_custom_window_via_generate_schedule_fallback(self):
+        # use_llm_refinement=False routes straight to the deterministic planner.
+        prefs = Preferences(day_start_minutes=660, day_end_minutes=1140)
+        result = await generate_schedule(
+            "Tokyo", _options(4), num_days=1,
+            use_llm_refinement=False, min_rating=1, preferences=prefs,
+        )
+        for dp in result.day_plans:
+            for item in dp.items:
+                assert 660 <= item.start_minutes < 1140

@@ -13,22 +13,38 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from src.db.database import get_sync_session_factory
-from src.db.models import ACTIVITY_CATEGORIES, Activity, Option, ScheduledItem, Trip
+from src.db.models import (
+    ACTIVITY_CATEGORIES,
+    BUDGET_CHOICES,
+    PACE_CHOICES,
+    Activity,
+    Option,
+    ScheduledItem,
+    Trip,
+)
 from src.db.queries import (
     add_activity,
     create_trip,
     get_activities,
     get_options_for_trip,
+    get_or_create_preferences,
     get_schedule,
     get_trip,
     get_trips,
     get_unrated_count,
     get_unresearched_count,
+    reset_research_state,
     set_option_duration,
     set_rating,
 )
 from src.clients.places_client import places_client_from_env
-from src.services.trip_service import generate_and_save_schedule, research_and_enrich, update_trip_fields
+from src.services.trip_service import (
+    generate_and_save_schedule,
+    research_and_enrich,
+    update_trip_fields,
+    update_trip_preferences,
+)
+from src.workers.preferences import Preferences
 from web.deps import get_db
 
 app = FastAPI(title="Itinerary Planner")
@@ -51,6 +67,8 @@ templates.env.filters["from_json"] = _safe_from_json
 
 from src.workers.planner import category_default_duration  # noqa: E402
 templates.env.globals["category_default_duration"] = category_default_duration
+templates.env.globals["PACE_CHOICES"] = PACE_CHOICES
+templates.env.globals["BUDGET_CHOICES"] = BUDGET_CHOICES
 
 
 def _hhmm(minutes: int) -> str:
@@ -268,7 +286,26 @@ def _render_tab(request: Request, session: Session, trip: Trip, tab: str, ctx: d
         return templates.get_template("trips/_tab_schedule.html").render({
             **ctx, "request": request, "days": days, "num_days": num_days,
         })
+    elif tab == "preferences":
+        return _render_preferences_panel(request, session, trip, ctx)
     return ""
+
+
+def _render_preferences_panel(request: Request, session: Session, trip: Trip, ctx: dict) -> str:
+    """Render the preferences panel (used by the tab, GET, and PATCH routes).
+
+    `prefs` carries the raw row (so the template can show unset fields); the
+    `day_start`/`day_end` view values resolve NULL window edges to defaults so
+    the time inputs always have a meaningful value.
+    """
+    prefs = get_or_create_preferences(session, trip.id)
+    view = Preferences.from_orm(prefs)
+    has_researched = (ctx["activity_count"] - ctx["unresearched_count"]) > 0
+    return templates.get_template("trips/_preferences_panel.html").render({
+        **ctx, "request": request, "trip": trip, "prefs": prefs,
+        "day_start": view.day_start_minutes, "day_end": view.day_end_minutes,
+        "has_researched": has_researched,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +361,52 @@ async def update_trip_field(
     if "num_days" in form:
         resp.headers["HX-Trigger"] = "numDaysChanged"
     return resp
+
+
+# ---------------------------------------------------------------------------
+# Preferences
+# ---------------------------------------------------------------------------
+
+@app.get("/trips/{trip_id}/preferences", response_class=HTMLResponse)
+def get_preferences_panel(request: Request, trip_id: int, session: Session = Depends(get_db)):
+    trip = get_trip(session, trip_id)
+    if not trip:
+        return HTMLResponse("", status_code=404)
+    ctx = _trip_context(session, trip)
+    return HTMLResponse(_render_preferences_panel(request, session, trip, ctx))
+
+
+@app.patch("/trips/{trip_id}/preferences", response_class=HTMLResponse)
+async def update_preferences_route(
+    request: Request,
+    trip_id: int,
+    session: Session = Depends(get_db),
+):
+    form = await request.form()
+    trip = get_trip(session, trip_id)
+    if not trip:
+        return HTMLResponse("", status_code=404)
+    field = next(iter(form.keys()), None)
+    if field is not None:
+        update_trip_preferences(session, trip, field, str(form[field]))
+    ctx = _trip_context(session, trip)
+    return HTMLResponse(_render_preferences_panel(request, session, trip, ctx))
+
+
+@app.post("/trips/{trip_id}/preferences/reset-research", response_class=HTMLResponse)
+def reset_research_route(request: Request, trip_id: int, session: Session = Depends(get_db)):
+    trip = get_trip(session, trip_id)
+    if not trip:
+        return HTMLResponse("", status_code=404)
+    reset_research_state(session, trip_id)
+    # Kick off a fresh research run, mirroring start_research.
+    job = _Job()
+    _research_jobs[trip_id] = job
+    t = threading.Thread(target=_run_research_and_enrich_background, args=(trip_id, job), daemon=True)
+    t.start()
+    return templates.TemplateResponse(request, "trips/_research_status.html", {
+        "request": request, "trip_id": trip_id, "message": "Re-researching activities…",
+    })
 
 
 # ---------------------------------------------------------------------------

@@ -8,7 +8,16 @@ from typing import Optional
 from sqlalchemy import and_, case, or_
 from sqlalchemy.orm import Session
 
-from src.db.models import Activity, Option, RouteCache, ScheduledItem, Trip
+from src.db.models import (
+    Activity,
+    BUDGET_CHOICES,
+    Option,
+    PACE_CHOICES,
+    RouteCache,
+    ScheduledItem,
+    Trip,
+    TripPreferences,
+)
 
 # Google ToS allows caching place data for up to 30 days.
 PLACES_STALE_DAYS = 30
@@ -45,6 +54,100 @@ def update_trip_num_days(session: Session, trip_id: int, num_days: int) -> None:
     if trip:
         trip.num_days = num_days
         session.commit()
+
+
+# ---------------------------------------------------------------------------
+# Trip preferences
+# ---------------------------------------------------------------------------
+
+# Fields the web layer is allowed to write, and how each is parsed/validated.
+_PREFERENCE_FIELDS = frozenset(
+    ("pace", "budget", "interests", "notes", "day_start_minutes", "day_end_minutes")
+)
+
+
+def _parse_hhmm(raw: str) -> Optional[int]:
+    """Parse an "HH:MM" time string into minutes-from-midnight, or None."""
+    parts = raw.split(":")
+    if len(parts) != 2 or not (parts[0].isdigit() and parts[1].isdigit()):
+        return None
+    hours, minutes = int(parts[0]), int(parts[1])
+    if not (0 <= hours <= 23 and 0 <= minutes <= 59):
+        return None
+    return hours * 60 + minutes
+
+
+def get_or_create_preferences(session: Session, trip_id: int) -> TripPreferences:
+    """Return the trip's preferences row, creating an empty one if absent."""
+    prefs = (
+        session.query(TripPreferences)
+        .filter(TripPreferences.trip_id == trip_id)
+        .one_or_none()
+    )
+    if prefs is None:
+        prefs = TripPreferences(trip_id=trip_id)
+        session.add(prefs)
+        session.commit()
+        session.refresh(prefs)
+    return prefs
+
+
+def update_preferences(
+    session: Session, trip_id: int, field: str, raw: str
+) -> TripPreferences:
+    """Validate and apply a single preference field, then commit.
+
+    Unknown fields are ignored (allowlist). Invalid enum values and blank input
+    reset the field to NULL ("no preference"). interests is parsed from a
+    comma-separated string into a JSON list; window edges from "HH:MM".
+    """
+    prefs = get_or_create_preferences(session, trip_id)
+    if field not in _PREFERENCE_FIELDS:
+        return prefs
+
+    stripped = str(raw).strip()
+    if field == "pace":
+        prefs.pace = stripped if stripped in PACE_CHOICES else None
+    elif field == "budget":
+        prefs.budget = stripped if stripped in BUDGET_CHOICES else None
+    elif field == "interests":
+        items = [s.strip() for s in stripped.split(",") if s.strip()]
+        prefs.interests = items or None
+    elif field == "notes":
+        prefs.notes = stripped or None
+    elif field == "day_start_minutes":
+        prefs.day_start_minutes = _parse_hhmm(stripped) if stripped else None
+    elif field == "day_end_minutes":
+        prefs.day_end_minutes = _parse_hhmm(stripped) if stripped else None
+
+    session.commit()
+    session.refresh(prefs)
+    return prefs
+
+
+def reset_research_state(session: Session, trip_id: int) -> None:
+    """Clear research output so it can be regenerated under new preferences.
+
+    Drops the trip's schedule and every researched Option, then marks all
+    activities unresearched. This lets the normal research flow re-run cleanly
+    without appending duplicate options. Destructive: the current schedule and
+    ratings are discarded.
+    """
+    activity_ids = [a.id for a in get_activities(session, trip_id)]
+
+    session.query(ScheduledItem).filter(
+        ScheduledItem.trip_id == trip_id
+    ).delete(synchronize_session=False)
+
+    if activity_ids:
+        session.query(Option).filter(
+            Option.activity_id.in_(activity_ids)
+        ).delete(synchronize_session=False)
+        session.query(Activity).filter(
+            Activity.id.in_(activity_ids)
+        ).update({Activity.researched_at: None}, synchronize_session=False)
+
+    session.commit()
 
 
 def get_activities(session: Session, trip_id: int) -> list[Activity]:

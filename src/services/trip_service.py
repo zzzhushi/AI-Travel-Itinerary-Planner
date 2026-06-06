@@ -18,7 +18,8 @@ from sqlalchemy.orm import Session
 from src.services.orchestrator import generate_schedule, research_batch
 from src.services.travel import cluster_and_route
 from src.workers.planner import PlanResult
-from src.db.models import Trip
+from src.workers.preferences import Preferences
+from src.db.models import Trip, TripPreferences
 from src.db.queries import (
     get_all_options_for_trip,
     get_rated_options_for_schedule,
@@ -26,6 +27,7 @@ from src.db.queries import (
     get_unresearched_activities,
     mark_researched,
     save_options,
+    update_preferences,
     upsert_schedule,
 )
 from src.clients.places_client import PlacesClient
@@ -49,7 +51,8 @@ async def research_activities(session: Session, trip: Trip) -> list[dict]:
         for act in activities
     ]
 
-    results = await research_batch(trip.destination, batch_input)
+    preferences = Preferences.from_orm(trip.preferences)
+    results = await research_batch(trip.destination, batch_input, preferences=preferences)
 
     summaries = []
     for act, (options, err) in zip(activities, results):
@@ -192,6 +195,7 @@ async def generate_and_save_schedule(
         min_rating=1,
         start_date=trip.start_date,
         travel_matrix=travel_matrix,
+        preferences=Preferences.from_orm(trip.preferences),
     )
 
     upsert_schedule(session, trip.id, result.day_plans)
@@ -223,3 +227,13 @@ def update_trip_fields(session: Session, trip: Trip, raw_fields: dict) -> None:
             value = str(raw).strip()
         setattr(trip, field, value)
     session.commit()
+
+
+def update_trip_preferences(
+    session: Session, trip: Trip, field: str, raw: str
+) -> TripPreferences:
+    """Validate and persist a single preference field for a trip.
+
+    Thin wrapper over the query helper so routes stay free of business logic.
+    """
+    return update_preferences(session, trip.id, field, raw)

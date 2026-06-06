@@ -12,7 +12,7 @@ Strategy:
 from __future__ import annotations
 
 from datetime import date
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from src.workers.planner.base import PlanResult
 from src.workers.planner.types import (
@@ -24,16 +24,19 @@ from src.workers.planner.types import (
     category_default_duration,
 )
 
+if TYPE_CHECKING:
+    from src.workers.preferences import Preferences
 
-def _assign_start_times(day_plan: DayPlan) -> None:
-    """Sort by category preference and lay items back-to-back from DAY_START_MINUTES.
+
+def _assign_start_times(day_plan: DayPlan, day_start: int = DAY_START_MINUTES) -> None:
+    """Sort by category preference and lay items back-to-back from day_start.
 
     Locked items with an existing start_minutes are kept in place. All other items
     are sorted by _CATEGORY_ORDER and placed sequentially.
     """
     free = [i for i in day_plan.items if not (i.is_locked and i.start_minutes is not None)]
     free.sort(key=lambda i: _CATEGORY_ORDER.get(i.category, 1))
-    current = DAY_START_MINUTES
+    current = day_start
     for item in free:
         item.start_minutes = current
         current += item.duration_minutes or category_default_duration(item.category)
@@ -75,7 +78,7 @@ def _fit_day_within_window(
             used += dur
 
     day_plan.items = locked + kept
-    _assign_start_times(day_plan)
+    _assign_start_times(day_plan, day_start)
 
 
 def build_schedule(
@@ -83,6 +86,7 @@ def build_schedule(
     num_days: int,
     locked_items: Optional[list[dict]] = None,
     min_rating: int = 3,
+    day_start: int = DAY_START_MINUTES,
 ) -> list[DayPlan]:
     """Raw distributor: round-robin free items across days, no window enforcement.
 
@@ -135,7 +139,7 @@ def build_schedule(
         days[day_num].items.append(item)
 
     for day_plan in days.values():
-        _assign_start_times(day_plan)
+        _assign_start_times(day_plan, day_start)
 
     return sorted(days.values(), key=lambda d: d.day_number)
 
@@ -156,10 +160,17 @@ class DeterministicPlanner:
         start_date: Optional[date] = None,
         min_rating: int = 1,
         travel_matrix: Optional[dict[str, dict[tuple[int, int], dict]]] = None,
+        preferences: Optional[Preferences] = None,
     ) -> PlanResult:
         # travel_matrix is accepted for SchedulePlanner-interface parity but
         # unused: the deterministic planner does not reason about travel times.
-        day_plans = build_schedule(options, num_days=num_days, min_rating=min_rating)
+        # Pace/budget/interests are likewise ignored — only the per-trip day
+        # window is honored here (pace/budget/interests are LLM-only).
+        day_start = preferences.day_start_minutes if preferences else DAY_START_MINUTES
+        day_end = preferences.day_end_minutes if preferences else DAY_END_MINUTES
+        day_plans = build_schedule(
+            options, num_days=num_days, min_rating=min_rating, day_start=day_start,
+        )
         for dp in day_plans:
-            _fit_day_within_window(dp)
+            _fit_day_within_window(dp, day_start, day_end)
         return PlanResult(day_plans=day_plans, source="deterministic")

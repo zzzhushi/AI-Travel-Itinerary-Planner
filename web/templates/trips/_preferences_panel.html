@@ -1,0 +1,83 @@
+<div id="preferences-panel" class="bg-white border border-gray-200 rounded-xl p-5 space-y-5 max-w-2xl">
+
+  <p class="text-sm text-gray-500">
+    Preferences gently steer research and scheduling. All are optional — leave a field unset for no preference.
+  </p>
+
+  <!-- Common hx attributes: each control PATCHes one field and swaps this whole panel -->
+  {% set hx = 'hx-patch="/trips/' ~ trip.id ~ '/preferences" hx-target="#preferences-panel" hx-swap="outerHTML" hx-trigger="change"' %}
+
+  <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+    <!-- Pace -->
+    <label class="block">
+      <span class="text-xs font-medium text-gray-600">Pace</span>
+      <select name="pace" {{ hx | safe }}
+        class="mt-1 block w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">
+        <option value="" {% if not prefs.pace %}selected{% endif %}>No preference</option>
+        {% for choice in PACE_CHOICES %}
+        <option value="{{ choice }}" {% if prefs.pace == choice %}selected{% endif %}>{{ choice | capitalize }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <!-- Budget -->
+    <label class="block">
+      <span class="text-xs font-medium text-gray-600">Budget</span>
+      <select name="budget" {{ hx | safe }}
+        class="mt-1 block w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">
+        <option value="" {% if not prefs.budget %}selected{% endif %}>No preference</option>
+        {% for choice in BUDGET_CHOICES %}
+        <option value="{{ choice }}" {% if prefs.budget == choice %}selected{% endif %}>{{ choice.replace('_', ' ') | capitalize }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <!-- Day start -->
+    <label class="block">
+      <span class="text-xs font-medium text-gray-600">Day starts</span>
+      <input type="time" name="day_start_minutes" value="{{ day_start | hhmm }}" {{ hx | safe }}
+        class="mt-1 block w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">
+    </label>
+
+    <!-- Day end -->
+    <label class="block">
+      <span class="text-xs font-medium text-gray-600">Day ends</span>
+      <input type="time" name="day_end_minutes" value="{{ day_end | hhmm }}" {{ hx | safe }}
+        class="mt-1 block w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">
+    </label>
+  </div>
+
+  <!-- Interests -->
+  <label class="block">
+    <span class="text-xs font-medium text-gray-600">Interests</span>
+    <input type="text" name="interests" value="{{ (prefs.interests or []) | join(', ') }}"
+      placeholder="e.g. food, temples, nightlife" {{ hx | safe }}
+      class="mt-1 block w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">
+    <span class="text-xs text-gray-400">Comma-separated. A light bias on research and a tie-breaker when scheduling.</span>
+  </label>
+
+  <!-- Notes -->
+  <label class="block">
+    <span class="text-xs font-medium text-gray-600">Notes</span>
+    <textarea name="notes" rows="2" placeholder="e.g. traveling with parents; want one fancy dinner" {{ hx | safe }}
+      class="mt-1 block w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">{{ prefs.notes or '' }}</textarea>
+  </label>
+
+  {% if has_researched %}
+  <div class="pt-2 border-t border-gray-100">
+    <p class="text-xs text-gray-400 mb-2">
+      Budget and interests shape what gets researched. Changing them after research?
+      Re-run to apply (this clears existing options, ratings, and the schedule).
+    </p>
+    <button
+      hx-post="/trips/{{ trip.id }}/preferences/reset-research"
+      hx-target="#trip-tabs"
+      hx-swap="innerHTML"
+      hx-confirm="Re-run research? This discards current options, ratings, and schedule."
+      class="text-sm text-indigo-600 hover:text-indigo-800 font-medium">
+      ↻ Re-run research to apply
+    </button>
+  </div>
+  {% endif %}
+
+</div>

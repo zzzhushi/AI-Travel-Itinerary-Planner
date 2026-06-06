@@ -21,6 +21,7 @@ from src.workers.planner import (
     PlanResult,
     PLANNER_INSTRUCTION,
 )
+from src.workers.preferences import Preferences
 
 # Thread-local agent instances.
 #
@@ -75,12 +76,14 @@ async def research(
     destination: str,
     query: str,
     is_specific: bool = False,
+    preferences: Optional[Preferences] = None,
 ) -> tuple[list[dict], str]:
     """Research a single activity for a destination. Returns (options, error)."""
     return await _get_researcher().research(
         destination=destination,
         query=query,
         is_specific=is_specific,
+        preferences=preferences,
     )
 
 
@@ -88,6 +91,7 @@ async def research_batch(
     destination: str,
     activities: list[dict],
     batch_size: int = 10,
+    preferences: Optional[Preferences] = None,
 ) -> list[tuple[list[dict], str]]:
     """Research a batch of activities. Processes activities in groups of batch_size.
 
@@ -101,7 +105,7 @@ async def research_batch(
     researcher = _get_researcher()
     for start in range(0, len(activities), batch_size):
         chunk = activities[start:start + batch_size]
-        batch_results = await researcher.research_batch(destination, chunk)
+        batch_results = await researcher.research_batch(destination, chunk, preferences)
         results.extend(batch_results)
 
     return results
@@ -115,6 +119,7 @@ async def generate_schedule(
     min_rating: int = 3,
     start_date: Optional[date] = None,
     travel_matrix: Optional[dict[str, dict[tuple[int, int], dict]]] = None,
+    preferences: Optional[Preferences] = None,
 ) -> PlanResult:
     """Generate a day-by-day schedule from rated options.
 
@@ -134,13 +139,18 @@ async def generate_schedule(
             start_date=start_date,
             min_rating=min_rating,
             travel_matrix=travel_matrix,
+            preferences=preferences,
         )
         if result.day_plans:
             return result
         # LLM failed or unusable — fall back to deterministic, carry the warning.
         llm_warning = result.warning
-        fallback = await _deterministic_planner.plan(options, num_days, min_rating=min_rating)
+        fallback = await _deterministic_planner.plan(
+            options, num_days, min_rating=min_rating, preferences=preferences,
+        )
         fallback.warning = llm_warning or "LLM produced an unusable schedule; using deterministic fallback."
         return fallback
 
-    return await _deterministic_planner.plan(options, num_days, min_rating=min_rating)
+    return await _deterministic_planner.plan(
+        options, num_days, min_rating=min_rating, preferences=preferences,
+    )
