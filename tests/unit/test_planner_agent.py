@@ -64,7 +64,9 @@ class _CapturingProvider(LLMProvider):
         return self._response, ""
 
 
-def _clustered_item(option_id: int, cluster_id: int, cluster_name: str) -> ScheduleItem:
+def _clustered_item(
+    option_id: int, cluster_id: int, cluster_name: str, price_level: int | None = None
+) -> ScheduleItem:
     return ScheduleItem(
         option_id=option_id,
         name=f"Place {option_id}",
@@ -73,6 +75,7 @@ def _clustered_item(option_id: int, cluster_id: int, cluster_name: str) -> Sched
         longitude=139.7 + option_id * 0.01,
         user_rating=4,
         duration_minutes=120,
+        price_level=price_level,
         cluster_id=cluster_id,
         cluster_name=cluster_name,
     )
@@ -172,6 +175,17 @@ class TestPlannerInstructionCovers:
         assert "relaxed" in lowered             # relaxed pace stays light
         assert "dinner" in lowered              # evening meal
         assert "day_end" in lowered             # defers to the per-trip window
+
+    def test_instruction_covers_geographic_day_partition(self):
+        lowered = PLANNER_INSTRUCTION.lower()
+        assert "whole-trip partition" in lowered     # balanced day assignment
+        assert "leftover bucket" in lowered          # no orphan-dump last day
+        assert "own day" in lowered and "dropped" in lowered  # far venue → own day or drop
+
+    def test_instruction_covers_budget_and_price(self):
+        lowered = PLANNER_INSTRUCTION.lower()
+        assert "price_level" in lowered            # price signal is documented
+        assert "window-shopping" in lowered or "browsing" in lowered  # spend, not prestige
 
     def test_instruction_covers_meal_cadence_and_ordering(self):
         lowered = PLANNER_INSTRUCTION.lower()
@@ -416,6 +430,16 @@ class TestBuildPromptPreferences:
         prefs = Preferences(day_start_minutes=600, day_end_minutes=1200)
         prompt = _build_prompt(self._day_plans(), "Tokyo", preferences=prefs)
         assert "Traveler preferences:" not in prompt
+
+
+class TestBuildPromptPriceLevel:
+    def test_price_rendered_when_present(self):
+        dp = [DayPlan(day_number=1, items=[_clustered_item(1, 0, "Ginza", price_level=4)])]
+        assert "price 4/4" in _build_prompt(dp, "Tokyo")
+
+    def test_price_omitted_when_absent(self):
+        dp = [DayPlan(day_number=1, items=[_clustered_item(1, 0, "Ginza")])]
+        assert "price" not in _build_prompt(dp, "Tokyo").split("Candidate stops")[1]
 
 
 class TestApplyRefinementWindow:

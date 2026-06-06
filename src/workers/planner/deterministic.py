@@ -113,6 +113,7 @@ def build_schedule(
                 or category_default_duration(o.get("category"))
             ),
             opening_hours=o.get("opening_hours"),
+            price_level=o.get("price_level"),
             cluster_id=o.get("cluster_id"),
             cluster_name=o.get("cluster_name"),
         )

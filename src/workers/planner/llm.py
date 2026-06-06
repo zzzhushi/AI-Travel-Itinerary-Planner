@@ -34,26 +34,27 @@ _PACE_HINT = {
     "packed": "Packed — fit as much as fits well; keep the day active toward day_end.",
 }
 _BUDGET_HINT = {
-    "budget": "Budget — prefer affordable stops; a higher price_level is a mild negative.",
-    "mid_range": "Mid-range — prefer moderately priced stops.",
-    "splurge": "Splurge — premium/high price_level stops are welcome.",
+    "budget": "Budget — keep spend low: low-price_level food and free/cheap attractions; avoid expensive dining and pricey paid entries. Free browsing of upscale areas is fine.",
+    "mid_range": "Mid-range — moderate spend: mid-price_level dining and standard attractions; skip luxury/high-end dining and costly paid venues. Free browsing of upscale areas is fine.",
+    "splurge": "Splurge — premium/high-price_level dining and experiences are welcome.",
 }
 
 logger = logging.getLogger(__name__)
 
 PLANNER_INSTRUCTION = """You are a travel itinerary planner. You are given a POOL of candidate stops grouped by geographic cluster, the number of trip days (each with its weekday), and an inter-cluster travel matrix. Select the best stops and arrange them into a geographically coherent day-by-day itinerary. You will almost always have more candidates than fit — choose well and drop the rest.
 
-Each stop has: option_id, name, category, user_rating (1–5, higher = more important), duration_minutes (how long to stay), opening_hours (full weekly schedule, or "unknown"), a cluster (cluster_id + name with an approximate centroid), and whether it is LOCKED.
+Each stop has: option_id, name, category, user_rating (1–5, higher = more important), duration_minutes (how long to stay), opening_hours (full weekly schedule, or "unknown"), price_level (0–4 where higher = pricier; omitted when unknown), a cluster (cluster_id + name with an approximate centroid), and whether it is LOCKED.
 
 The inter-cluster travel matrix gives one-way travel times (minutes) between cluster anchors. Stops in the SAME cluster are a short walk apart (~10 min); stops in DIFFERENT clusters cost the matrix time. Use this — not raw coordinates — to reason about travel.
 
 How to plan:
 1. Minimise total travel; group by area. A day may span up to ~3 clusters, but every move between clusters costs the matrix travel time and eats the day. Sequence a day's clusters so you flow through adjacent areas in one direction — never backtrack (no A→B→A). Crossing the city is worth it for a high-priority stop, not for a low-rated one; balance the best stops against wasted back-and-forth.
 2. Keep clusters together. Stops sharing a cluster_id go on the same day and are visited consecutively; only split a cluster when it has more good stops than fit in one day.
-3. Anchor each day. If a day has LOCKED items, its area is fixed — build around them and pull in their cluster's other stops. If nothing is locked, pick the highest-rated major attraction (sightseeing/culture/nature) in an area as that day's anchor, then add nearby stops.
+3. Assign clusters to days as a WHOLE-TRIP partition, not greedily day by day. First divide the clusters into per-day groups so that (a) each day covers one area or a few ADJACENT clusters (use the travel matrix to judge adjacency), (b) days are roughly balanced, and (c) NO day becomes a leftover bucket of far-apart stops — the last day must be as geographically compact as the first. Then anchor each day: if it has LOCKED items its area is fixed, build around them; otherwise anchor on the highest-rated stop that also fits the traveler's interests in that area, then add nearby stops. A cluster far from all others (a distant suburb, or a big all-day venue like a theme park) must either anchor its OWN day with its full duration allocated, or be dropped — never stitch a far, off-theme orphan onto a day whose other stops are in a different region just to use it up. Prefer dropping such an orphan over creating a cross-city day.
 4. Match the requested pace (see Traveler preferences below; default balanced). A packed pace fills the whole day window — keep placing stops through the evening rather than stopping after the afternoon, pulling in the next-best nearby stops (an adjacent cluster is fine) before leaving hours empty. A relaxed pace deliberately schedules fewer stops with breathing room between them; do not over-fill. Always prioritise rating 5 > 4 > 3, and only skip a stop when it would need a long detour for little payoff.
 5. Budget real travel as hard arithmetic. Each stop's start_minutes MUST be at least the previous stop's start_minutes + its duration_minutes + travel from the previous stop (~10 min within a cluster; the matrix time between clusters). Never place two stops closer together than that — underestimating travel between neighborhoods is the most common mistake.
 6. Durations are the user's choice — honor them as fact. Schedule each stop for exactly its given duration_minutes; never shorten or lengthen it to be "realistic" (if a theme park is set to 30 min, use 30 min).
+7. Respect the budget when one is given (see Traveler preferences). Budget governs SPENDING — chiefly meals and paid entries — not a venue's prestige. Judge each stop by its price_level when present, and by your own knowledge of the venue when price_level is absent. For a budget/mid-range trip, avoid expensive restaurants and costly paid attractions; but browsing or window-shopping a famous upscale place (e.g. a luxury mall or flagship store) is fine because looking is free — keep it only if it earns its place on interest/photos, not as paid shopping.
 
 Then schedule each day:
 - Assign every chosen stop a start_minutes (minutes from midnight, e.g. 540 = 09:00), within the day window given below (day_start to day_end). Never start a stop at or after day_end, and do not stack items past it.
@@ -69,6 +70,7 @@ Then schedule each day:
 Before responding, silently verify each day against the traveler's requirements and fix any violation first:
 - every requested meal/snack slot is present and correctly ordered (e.g. a post-dinner dessert starts after dinner ends);
 - no option_id repeats within a day or across days;
+- every day is geographically compact — one area or adjacent clusters only; no day (especially the last) mixes distant regions or strands a far-away stop;
 - every start_minutes respects opening_hours, the day window, and the travel arithmetic in rule 5.
 Repair the plan to satisfy these before emitting JSON. Do not include this checklist in your output.
 
@@ -185,13 +187,14 @@ def _format_candidate_pool(items: list[ScheduleItem]) -> str:
         lines = [header]
         for m in sorted(members, key=lambda x: (-(x.user_rating or 0), x.option_id)):
             dur = m.duration_minutes or category_default_duration(m.category)
+            price = f", price {m.price_level}/4" if m.price_level is not None else ""
             tag = (
                 f" [LOCKED day {m.day_number or 1} @ {_hhmm(m.start_minutes)}]"
                 if m.is_locked else ""
             )
             lines.append(
                 f"  - opt {m.option_id}: {m.name} "
-                f"[{m.category}, rating {m.user_rating}, {dur} min]{tag}"
+                f"[{m.category}, rating {m.user_rating}, {dur} min{price}]{tag}"
             )
             lines.append(f"    hours: {m.opening_hours or 'unknown'}")
         blocks.append("\n".join(lines))

@@ -188,7 +188,7 @@ class TestGetRatedOptionsForSchedule:
         row = result[0]
         for key in ("option_id", "name", "category", "latitude", "longitude",
                     "user_rating", "is_locked", "day_number", "start_minutes",
-                    "time_slot", "default_duration_minutes"):
+                    "time_slot", "default_duration_minutes", "price_level"):
             assert key in row, f"Missing key: {key}"
 
     def test_prefers_option_category_over_activity_category(self, session):

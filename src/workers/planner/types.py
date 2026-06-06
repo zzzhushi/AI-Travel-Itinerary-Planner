@@ -58,6 +58,7 @@ class ScheduleItem:
     duration_minutes: Optional[int] = None
     note: Optional[str] = None            # LLM placement rationale
     opening_hours: Optional[str] = None   # raw Places API hours string
+    price_level: Optional[int] = None     # Places price tier 0–4 (higher = pricier)
     # Geographic cluster this item belongs to, stamped by the clustering pass
     # (src/workers/planner/clustering.py). cluster_id is a per-trip index;
     # cluster_name is the modal-neighborhood label. Both None until clustered.

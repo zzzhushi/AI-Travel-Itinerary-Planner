@@ -338,6 +338,7 @@ def get_rated_options_for_schedule(session: Session, trip_id: int) -> list[dict]
             "place_id": opt.place_id,
             "neighborhood": opt.neighborhood,
             "google_rating": opt.google_rating,
+            "price_level": opt.price_level,
             "is_locked": si.is_locked if si else False,
             "day_number": si.day_number if si else None,
             # Existing placement time — lets build_schedule keep locked items
