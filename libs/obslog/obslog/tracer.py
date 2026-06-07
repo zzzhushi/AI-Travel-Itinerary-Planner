@@ -100,7 +100,14 @@ class SpanHandle:
         self._started_at = time.time()
         self._start_monotonic = time.monotonic()
         self._token = _ctx.set_current(self)
-        _sink.emit_span(self._record())  # status=running
+        try:
+            _sink.emit_span(self._record())  # status=running
+        except BaseException:
+            # A failing sink on open must not leave a dangling current-span
+            # whose __exit__ (and token reset) will never run.
+            _ctx.reset_current(self._token)
+            self._token = None
+            raise
 
     def _finish(self, exc: Optional[BaseException]) -> None:
         if self._finished:
@@ -114,9 +121,13 @@ class SpanHandle:
             self.status = Status.SUCCESS.value
         ended_at = time.time()
         duration_ms = (time.monotonic() - (self._start_monotonic or 0.0)) * 1000.0
-        _sink.emit_span(self._record(ended_at=ended_at, duration_ms=duration_ms))
-        if self._token is not None:
-            _ctx.reset_current(self._token)
+        try:
+            _sink.emit_span(self._record(ended_at=ended_at, duration_ms=duration_ms))
+        finally:
+            # Always restore the parent span, even if the sink raises — otherwise
+            # the contextvar leaks this finished span into the rest of the context.
+            if self._token is not None:
+                _ctx.reset_current(self._token)
 
     def _record(self, *, ended_at: Optional[float] = None, duration_ms: Optional[float] = None) -> Span:
         return Span(
@@ -173,13 +184,15 @@ def operation(name: str, *, labels: Optional[dict[str, Any]] = None, **attrs: An
 def span(name: str, *, labels: Optional[dict[str, Any]] = None, **attrs: Any) -> _SpanCM:
     """Open a CHILD of the current span (or a root if none active).
 
-    A child inherits the parent's operation_id and labels (so trip_id propagates).
+    A child inherits the parent's operation_id and labels (so trip_id propagates),
+    plus any ambient labels bound since the parent opened (so a bind_labels()
+    nested inside the operation still reaches spans opened within it).
     """
     parent = _ctx.current_span()
     if parent is not None:
         operation_id = parent.operation_id
         parent_span_id: Optional[str] = parent.span_id
-        base_labels = dict(parent.labels)
+        base_labels = {**parent.labels, **_ctx.get_ambient_labels()}
     else:
         operation_id = new_operation_id()
         parent_span_id = None

@@ -25,8 +25,10 @@ _current_span: contextvars.ContextVar[Optional["SpanHandle"]] = contextvars.Cont
 )
 
 # Labels attached to a scope via bind_labels(); merged into spans opened within.
-_ambient_labels: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar(
-    "obslog_ambient_labels", default={}
+# Default is None (not a shared mutable {}) so no caller can accidentally mutate
+# a single dict shared across every context; get_ambient_labels() normalizes it.
+_ambient_labels: contextvars.ContextVar[Optional[dict[str, Any]]] = contextvars.ContextVar(
+    "obslog_ambient_labels", default=None
 )
 
 
@@ -43,7 +45,7 @@ def reset_current(token: contextvars.Token) -> None:
 
 
 def get_ambient_labels() -> dict[str, Any]:
-    return _ambient_labels.get()
+    return _ambient_labels.get() or {}
 
 
 @contextlib.contextmanager
@@ -54,7 +56,7 @@ def bind_labels(**labels: Any) -> Iterator[None]:
     `request_id` (or `trip_id`) once instead of passing it to every call. Usable
     in async code too — it's synchronous and holds across `await`.
     """
-    merged = {**_ambient_labels.get(), **labels}
+    merged = {**(_ambient_labels.get() or {}), **labels}
     token = _ambient_labels.set(merged)
     try:
         yield

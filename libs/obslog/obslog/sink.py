@@ -65,7 +65,8 @@ def get_sink() -> Sink:
 
 def configure(*, service: Optional[str] = None, processors: Optional[list[Processor]] = None) -> None:
     """Global setup. `service` is stamped as a label; `processors` are `(record)->record`
-    hooks applied to every record before it reaches the sink (e.g. add host/env/git sha)."""
+    hooks applied to every record before it reaches the sink (e.g. add host/env/git sha).
+    A processor that returns None drops the record."""
     global _service, _processors
     with _lock:
         if service is not None:
@@ -83,19 +84,26 @@ def reset() -> None:
         _service = None
 
 
-def _enrich(record: Record) -> Record:
+def _enrich(record: Record) -> Optional[Record]:
+    """Apply service label + processors. A processor returning None DROPS the
+    record (the structlog convention), so `_enrich` may return None."""
     if _service is not None:
         record.labels.setdefault("service", _service)
     for proc in _processors:
         out = proc(record)
-        if out is not None:
-            record = out
+        if out is None:
+            return None
+        record = out
     return record
 
 
 def emit_span(span: Span) -> None:
-    get_sink().emit_span(_enrich(span))
+    record = _enrich(span)
+    if record is not None:
+        get_sink().emit_span(record)
 
 
 def emit_event(event: Event) -> None:
-    get_sink().emit_event(_enrich(event))
+    record = _enrich(event)
+    if record is not None:
+        get_sink().emit_event(record)

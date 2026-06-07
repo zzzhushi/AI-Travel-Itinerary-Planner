@@ -148,6 +148,15 @@ def test_child_inherits_parent_labels(mem):
             assert child.labels["trip_id"] == 9
 
 
+def test_child_inherits_bind_labels_nested_in_operation(mem):
+    # bind_labels entered AFTER the operation opened must still reach child spans.
+    with obslog.operation("root", labels={"trip_id": 9}):
+        with obslog.bind_labels(stage="retry"):
+            with obslog.span("child") as child:
+                assert child.labels["trip_id"] == 9
+                assert child.labels["stage"] == "retry"
+
+
 def test_bind_context_carries_correlation_into_thread(mem):
     captured = {}
 
@@ -213,3 +222,62 @@ def test_async_and_sync_both_work(mem):
     asyncio.run(go())
     names = {s.name for s in mem.terminal_spans()}
     assert {"sync_op", "async_op"} <= names
+
+
+def test_processor_returning_none_drops_record():
+    s = InMemorySink()
+    obslog.set_sink(s)
+
+    def drop_everything(record):
+        return None
+
+    obslog.configure(processors=[drop_everything])
+    try:
+        with obslog.operation("op"):
+            obslog.trace("t")
+        assert s.spans == [] and s.events == []
+    finally:
+        sink_registry.reset()
+
+
+# --- robustness: a failing sink must not corrupt the current-span contextvar --
+
+class _BoomSink(InMemorySink):
+    """Captures records, but raises on the terminal (closing) span record."""
+
+    def emit_span(self, span):
+        super().emit_span(span)
+        if span.status != "running":
+            raise RuntimeError("sink down")
+
+
+def test_failing_sink_on_close_does_not_leak_current_span(mem):
+    obslog.set_sink(_BoomSink())
+    try:
+        with pytest.raises(RuntimeError):
+            with obslog.operation("op"):
+                pass
+    finally:
+        obslog.set_sink(mem)
+    # The contextvar must be back to None despite the sink blowing up on close.
+    assert obslog.current_span() is None
+    # A fresh operation is therefore a clean root, not a child of the leaked span.
+    with obslog.operation("next") as op:
+        assert op.parent_span_id is None
+
+
+def test_jsonl_file_sink_appends_and_closes(tmp_path):
+    from obslog.sinks import JsonlFileSink
+
+    path = tmp_path / "log.jsonl"
+    sink = JsonlFileSink(str(path))
+    obslog.set_sink(sink)
+    try:
+        with obslog.operation("op"):
+            obslog.trace("t")
+    finally:
+        sink.close()
+        sink_registry.reset()
+    lines = [l for l in path.read_text().splitlines() if l]
+    # running + terminal span, plus one trace event
+    assert len(lines) == 3
