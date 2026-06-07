@@ -13,7 +13,7 @@ dependencies = []
 # The core is stdlib-only. Backends that need drivers declare them here so the
 # core stays dependency-free; install with e.g. `pip install obslog[postgres]`.
 [project.optional-dependencies]
-postgres = ["sqlalchemy>=2.0"]
+postgres = ["sqlalchemy>=2.0", "psycopg2-binary>=2.9"]
 
 [tool.setuptools.packages.find]
 where = ["."]
