@@ -15,6 +15,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
+import obslog
 from src.services.orchestrator import generate_schedule, research_batch
 from src.services.travel import cluster_and_route
 from src.workers.planner import PlanResult
@@ -49,7 +50,8 @@ async def research_activities(session: Session, trip: Trip) -> list[dict]:
         for act in activities
     ]
 
-    results = await research_batch(trip.destination, batch_input)
+    with obslog.bind_labels(trip_id=trip.id):
+        results = await research_batch(trip.destination, batch_input)
 
     summaries = []
     for act, (options, err) in zip(activities, results):
@@ -184,15 +186,16 @@ async def generate_and_save_schedule(
         except Exception:
             logger.warning("Clustering/travel-matrix failed for trip %s", trip.id, exc_info=True)
 
-    result = await generate_schedule(
-        destination=trip.destination,
-        options=options,
-        num_days=num_days,
-        use_llm_refinement=use_llm_refinement,
-        min_rating=1,
-        start_date=trip.start_date,
-        travel_matrix=travel_matrix,
-    )
+    with obslog.bind_labels(trip_id=trip.id):
+        result = await generate_schedule(
+            destination=trip.destination,
+            options=options,
+            num_days=num_days,
+            use_llm_refinement=use_llm_refinement,
+            min_rating=1,
+            start_date=trip.start_date,
+            travel_matrix=travel_matrix,
+        )
 
     upsert_schedule(session, trip.id, result.day_plans)
     return result

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Optional
 
+import obslog
 from src.agents.providers.llm_provider import LLMProvider
 
 logger = logging.getLogger(__name__)
@@ -53,13 +55,29 @@ class GeminiProvider(LLMProvider):
             self._call_count,
             prompt,
         )
+        t0 = time.monotonic()
+        text, err = "", ""
         try:
             response = await self._runner.run_debug(prompt, session_id=session_id)
             text = self._extract_text(response)
-            return (text, "") if text else ("", "No text in agent response.")
+            if not text:
+                err = "No text in agent response."
+            return (text, err)
         except Exception as e:
-            return "", f"Agent error: {e}"
+            err = f"Agent error: {e}"
+            return "", err
         finally:
+            obslog.event(
+                "llm_call",
+                agent_name=self._agent.name,
+                model="gemini-2.5-flash",
+                status="error" if err else "ok",
+                latency_ms=round((time.monotonic() - t0) * 1000, 1),
+                prompt_chars=len(prompt),
+                response_chars=len(text),
+                error=err or None,
+                blob=text or None,
+            )
             try:
                 await self._runner.session_service.delete_session(
                     app_name=self._runner.app_name,

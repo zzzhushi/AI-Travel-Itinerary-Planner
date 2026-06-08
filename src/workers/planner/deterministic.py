@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Optional
 
+import obslog
 from src.workers.planner.base import PlanResult
 from src.workers.planner.types import (
     DAY_END_MINUTES,
@@ -159,7 +160,9 @@ class DeterministicPlanner:
     ) -> PlanResult:
         # travel_matrix is accepted for SchedulePlanner-interface parity but
         # unused: the deterministic planner does not reason about travel times.
-        day_plans = build_schedule(options, num_days=num_days, min_rating=min_rating)
-        for dp in day_plans:
-            _fit_day_within_window(dp)
-        return PlanResult(day_plans=day_plans, source="deterministic")
+        async with obslog.span("deterministic_plan", num_days=num_days) as sp:
+            day_plans = build_schedule(options, num_days=num_days, min_rating=min_rating)
+            for dp in day_plans:
+                _fit_day_within_window(dp)
+            sp.set(scheduled_items=sum(len(dp.items) for dp in day_plans))
+            return PlanResult(day_plans=day_plans, source="deterministic")
