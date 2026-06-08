@@ -31,7 +31,27 @@ from src.clients.places_client import places_client_from_env
 from src.services.trip_service import generate_and_save_schedule, research_and_enrich, update_trip_fields
 from web.deps import get_db
 
-app = FastAPI(title="Itinerary Planner")
+from contextlib import asynccontextmanager  # noqa: E402
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # Structured logging: opt-in via OBSLOG_SINK=postgres; default NullSink keeps
+    # tests DB-free. The background writer is flushed/closed on shutdown.
+    import obslog
+
+    from src.logging_setup import install_obslog_sink, shutdown_obslog
+
+    if install_obslog_sink() is not None:
+        with obslog.operation("web_startup"):  # smoke op: proves end-to-end writes
+            obslog.trace("web_started")
+    try:
+        yield
+    finally:
+        shutdown_obslog()
+
+
+app = FastAPI(title="Itinerary Planner", lifespan=_lifespan)
 
 _EDITABLE_TRIP_FIELDS = {"name", "destination", "num_days", "start_date", "end_date"}
 
