@@ -13,7 +13,11 @@ from typing import Sequence, Union
 from alembic import op
 
 from obslog.sinks.postgres import build_metadata
-from src.logging_setup import indexed_labels, _llm_calls_typed_table
+from src.logging_setup import (
+    indexed_labels,
+    promoted_label_columns,
+    _llm_calls_typed_table,
+)
 
 revision: str = "e6f7a8b9c0d1"
 down_revision: Union[str, None] = "d5e6f7a8b9c0"
@@ -24,6 +28,7 @@ depends_on: Union[str, Sequence[str], None] = None
 def _metadata():
     return build_metadata(
         indexed_labels=indexed_labels(),
+        label_columns=promoted_label_columns(),
         typed_tables=[_llm_calls_typed_table()],
     )[0]
 

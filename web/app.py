@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 from typing import Dict, Optional
 
+import obslog
 from fastapi import Depends, FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -38,8 +39,6 @@ from contextlib import asynccontextmanager  # noqa: E402
 async def _lifespan(_app: FastAPI):
     # Structured logging: opt-in via OBSLOG_SINK=postgres; default NullSink keeps
     # tests DB-free. The background writer is flushed/closed on shutdown.
-    import obslog
-
     from src.logging_setup import install_obslog_sink, shutdown_obslog
 
     if install_obslog_sink() is not None:
@@ -168,9 +167,11 @@ def _run_research_and_enrich_background(trip_id: int, job: _Job) -> None:
             trip = session.get(Trip, trip_id)
             if trip is None:
                 return
-            summaries, _stats = asyncio.run(
-                research_and_enrich(session, trip, client)
-            )
+            # trip_id flows into every span/llm_call for this background job.
+            with obslog.bind_labels(trip_id=trip_id):
+                summaries, _stats = asyncio.run(
+                    research_and_enrich(session, trip, client)
+                )
         job.result = summaries
     except Exception as e:
         job.error = str(e)
@@ -188,9 +189,11 @@ def _run_schedule_background(trip_id: int, num_days: int, use_llm: bool, job: _J
             trip = session.get(Trip, trip_id)
             if trip is None:
                 return
-            result = asyncio.run(
-                generate_and_save_schedule(session, trip, num_days, use_llm)
-            )
+            # trip_id flows into every span/llm_call for this background job.
+            with obslog.bind_labels(trip_id=trip_id):
+                result = asyncio.run(
+                    generate_and_save_schedule(session, trip, num_days, use_llm)
+                )
         job.result = {"warn": result.warning}
     except Exception as e:
         job.error = str(e)

@@ -1,9 +1,9 @@
 """App-side policy for obslog (the obslog core is domain-agnostic).
 
-This is where *this* app decides what to log to Postgres: it indexes `trip_id`
-and registers a typed `llm_calls` table for `kind="llm_call"` events. The obslog
-library knows none of that — it only provides the mechanisms (labels,
-typed-event-tables, sinks).
+This is where *this* app decides what to log to Postgres: it promotes `trip_id`
+to a real indexed column and registers a typed `llm_calls` table for
+`kind="llm_call"` events. The obslog library knows none of that — it only
+provides the mechanisms (labels, promoted columns, typed-event-tables, sinks).
 
 Activation is opt-in via the `OBSLOG_SINK` env var so unit tests and
 `--dry-run` stay on the default NullSink (no DB needed):
@@ -51,9 +51,26 @@ def _llm_calls_typed_table():
     )
 
 
+def promoted_label_columns():
+    """Labels promoted to real, indexed columns (and stripped from the JSONB blob).
+
+    `trip_id` is a stable, high-cardinality key we filter on constantly, so it
+    earns a real `trip_id INTEGER` column with a B-tree index instead of living
+    in the dynamic `labels` JSONB. Queries become `WHERE trip_id = 5`. It is set
+    once at each entry point via `obslog.bind_labels(trip_id=...)` — no service
+    or worker code threads it through by hand.
+    """
+    from sqlalchemy import Integer
+
+    return [("trip_id", Integer)]
+
+
 def indexed_labels() -> list[str]:
-    """Labels this app filters logs by — the sink builds expression indexes for these."""
-    return ["trip_id"]
+    """Labels kept in JSONB but given an expression index (occasional filters).
+
+    Empty now that `trip_id` is a promoted column. Kept as the hook for adding a
+    JSONB-indexed label later without a schema migration."""
+    return []
 
 
 def install_obslog_sink() -> Optional[object]:
@@ -76,6 +93,7 @@ def install_obslog_sink() -> Optional[object]:
         dsn,
         retention=os.getenv("OBSLOG_RETENTION", "3d"),
         indexed_labels=indexed_labels(),
+        label_columns=promoted_label_columns(),
         typed_tables=[_llm_calls_typed_table()],
     )
     set_sink(_sink)

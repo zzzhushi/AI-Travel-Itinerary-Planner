@@ -14,7 +14,7 @@ Design goals (see the module README):
 - **Typed event tables.** Events whose `kind` matches a registered
   `TypedEventTable` are routed to a dedicated table with promoted columns (this
   is how `llm_call` events land in `llm_calls`); everything else goes to
-  `events`. The library knows nothing about LLMs — the app supplies the policy.
+  `log_records`. The library knows nothing about LLMs — the app supplies the policy.
 - **Retention is a library feature.** The worker deletes rows older than the
   window on startup and periodically; `cleanup()` triggers it on demand.
 """
@@ -90,7 +90,21 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def span_row(span: Span) -> dict[str, Any]:
+def _promote(labels: dict[str, Any], keys: Optional[list[str]]) -> dict[str, Any]:
+    """Pop promoted label keys out of `labels` (mutating it) into top-level columns.
+
+    A promoted label becomes a real, indexed column, so it is *removed* from the
+    JSONB `labels` blob to avoid storing it twice (the app asked for it as a
+    column precisely because it filters on it often). Keys that are absent still
+    get a column, set to None — the column is always present in the row."""
+    if not keys:
+        return {}
+    return {k: labels.pop(k, None) for k in keys}
+
+
+def span_row(span: Span, promoted_labels: Optional[list[str]] = None) -> dict[str, Any]:
+    labels = dict(span.labels)
+    promoted = _promote(labels, promoted_labels)
     return {
         "created_at": _now(),
         "operation_id": span.operation_id,
@@ -102,7 +116,7 @@ def span_row(span: Span) -> dict[str, Any]:
         "ended_at": _epoch_to_dt(span.ended_at),
         "duration_ms": span.duration_ms,
         "error": span.error,
-        "labels": dict(span.labels),
+        "labels": labels,
         "attributes": dict(span.attributes),
         # diagnostic fields (None when not set)
         "version": span.version,
@@ -118,10 +132,13 @@ def span_row(span: Span) -> dict[str, Any]:
         "correlation_id": span.correlation_id,
         "parent_request_id": span.parent_request_id,
         "idempotency_key": span.idempotency_key,
+        **promoted,
     }
 
 
-def log_record_row(record: LogRecord) -> dict[str, Any]:
+def log_record_row(record: LogRecord, promoted_labels: Optional[list[str]] = None) -> dict[str, Any]:
+    labels = dict(record.labels)
+    promoted = _promote(labels, promoted_labels)
     return {
         "created_at": _now(),
         "ts": _epoch_to_dt(record.ts),
@@ -132,16 +149,22 @@ def log_record_row(record: LogRecord) -> dict[str, Any]:
         "message": record.message,
         "fields": dict(record.fields),
         "blob": record.blob,
-        "labels": dict(record.labels),
+        "labels": labels,
+        **promoted,
     }
 
 
-def typed_log_record_row(record: LogRecord, typed: TypedEventTable) -> dict[str, Any]:
+def typed_log_record_row(
+    record: LogRecord, typed: TypedEventTable, promoted_labels: Optional[list[str]] = None
+) -> dict[str, Any]:
+    labels = dict(record.labels)
+    promoted = _promote(labels, promoted_labels)
     row: dict[str, Any] = {
         "created_at": _now(),
         "operation_id": record.operation_id,
         "span_id": record.span_id,
-        "labels": dict(record.labels),
+        "labels": labels,
+        **promoted,
     }
     for name, _type in typed.columns:
         row[name] = record.fields.get(name)
@@ -151,13 +174,15 @@ def typed_log_record_row(record: LogRecord, typed: TypedEventTable) -> dict[str,
 
 
 def route_log_record(
-    record: LogRecord, typed_tables: dict[str, TypedEventTable]
+    record: LogRecord,
+    typed_tables: dict[str, TypedEventTable],
+    promoted_labels: Optional[list[str]] = None,
 ) -> tuple[str, dict[str, Any]]:
     """Return (table_name, row) for a LogRecord — typed table if registered, else `log_records`."""
     typed = typed_tables.get(record.kind)
     if typed is not None:
-        return typed.table, typed_log_record_row(record, typed)
-    return "log_records", log_record_row(record)
+        return typed.table, typed_log_record_row(record, typed, promoted_labels)
+    return "log_records", log_record_row(record, promoted_labels)
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +193,7 @@ def route_log_record(
 def build_metadata(
     *,
     indexed_labels: Optional[list[str]] = None,
+    label_columns: Optional[list[tuple[str, Any]]] = None,
     typed_tables: Optional[list[TypedEventTable]] = None,
     schema: Optional[str] = None,
 ):
@@ -175,6 +201,19 @@ def build_metadata(
 
     Single source of truth for the schema: both `SqlAlchemyBackend.create_tables`
     and the app's Alembic migration use this, so the DDL never drifts.
+
+    Two ways to make a label filterable, depending on how often you query it:
+
+    - `indexed_labels`: the label stays in the JSONB `labels` blob and gets an
+      *expression* index on `(labels ->> 'k')`. Good for occasional filters; no
+      schema change to add one.
+    - `label_columns`: `(name, sqlalchemy_type)` pairs promoted to *real columns*
+      on every table, each with a plain B-tree index, and stripped out of the
+      JSONB blob at write time (see `_promote`). Good for a stable, hot filter
+      key (e.g. `trip_id`) you want to query as `WHERE trip_id = 5`.
+
+    A key listed in both is treated as a column (the JSONB expression index is
+    skipped, since the key no longer lives in `labels`).
     """
     from sqlalchemy import (
         BigInteger,
@@ -191,17 +230,29 @@ def build_metadata(
     from sqlalchemy.dialects.postgresql import JSONB, UUID
 
     indexed_labels = indexed_labels or []
+    label_columns = label_columns or []
+    promoted_names = [name for name, _type in label_columns]
+    # A promoted label is a real column now, so don't also build a (dead) JSONB
+    # expression index for it.
+    expr_labels = [l for l in indexed_labels if l not in promoted_names]
     md = MetaData(schema=schema)
+
+    def _promoted_cols() -> list:
+        # Fresh Column objects per call — a Column can't be shared across tables.
+        return [Column(name, col_type, nullable=True) for name, col_type in label_columns]
 
     def _label_indexes(table_name: str, columns) -> None:
         # Core indexes every table gets, plus an expression index per indexed
-        # label. The label index is built from `labels[label].astext` (-> the
-        # `(labels ->> 'k')` expression) rather than a raw text() so SQLAlchemy
-        # binds it to the table and create_all actually emits it.
+        # label and a B-tree index per promoted label column. The expression
+        # index is built from `labels[label].astext` (-> the `(labels ->> 'k')`
+        # expression) rather than a raw text() so SQLAlchemy binds it to the
+        # table and create_all actually emits it.
         Index(f"ix_{table_name}_operation_id", columns["operation_id"])
         Index(f"ix_{table_name}_created_at", columns["created_at"])
-        for label in indexed_labels:
+        for label in expr_labels:
             Index(f"ix_{table_name}_{label}", columns["labels"][label].astext)
+        for name in promoted_names:
+            Index(f"ix_{table_name}_{name}", columns[name])
 
     # IDs use the native UUID type (16 bytes, natively indexed); as_uuid=False
     # means SQLAlchemy accepts/returns plain strings — no uuid.UUID objects needed.
@@ -223,6 +274,7 @@ def build_metadata(
         Column("error", Text, nullable=True),
         Column("labels", JSONB, nullable=False),
         Column("attributes", JSONB, nullable=False),
+        *_promoted_cols(),
         # deployment context
         Column("version", Text, nullable=True),
         Column("environment", Text, nullable=True),
@@ -259,6 +311,7 @@ def build_metadata(
         Column("fields", JSONB, nullable=False),
         Column("blob", Text, nullable=True),
         Column("labels", JSONB, nullable=False),
+        *_promoted_cols(),
     )
     _label_indexes("log_records", log_records.c)
 
@@ -271,6 +324,7 @@ def build_metadata(
             Column("operation_id", _UUID, nullable=True),
             Column("span_id", _UUID, nullable=True),
             Column("labels", JSONB, nullable=False),
+            *_promoted_cols(),
         ]
         for name, col_type in typed.columns:
             cols.append(Column(name, col_type, nullable=True))
@@ -347,6 +401,7 @@ class PostgresSink(Sink):
         *,
         retention: Optional[str | timedelta] = "3d",
         indexed_labels: Optional[list[str]] = None,
+        label_columns: Optional[list[tuple[str, Any]]] = None,
         typed_tables: Optional[list[TypedEventTable]] = None,
         batch_size: int = 100,
         flush_interval: float = 0.5,
@@ -356,6 +411,9 @@ class PostgresSink(Sink):
         backend: Optional[Any] = None,
     ) -> None:
         self._typed = {t.kind: t for t in (typed_tables or [])}
+        # Names of labels promoted to real columns — stripped from JSONB and set
+        # as top-level columns on every row (see span_row / route_log_record).
+        self._promoted = [name for name, _type in (label_columns or [])]
         self._retention = parse_retention(retention)
         self._retention_interval = retention_interval
         self._batch_size = batch_size
@@ -365,7 +423,10 @@ class PostgresSink(Sink):
             if dsn is None:
                 raise ValueError("PostgresSink requires either a dsn or an injected backend")
             metadata, tables = build_metadata(
-                indexed_labels=indexed_labels, typed_tables=typed_tables, schema=schema
+                indexed_labels=indexed_labels,
+                label_columns=label_columns,
+                typed_tables=typed_tables,
+                schema=schema,
             )
             backend = SqlAlchemyBackend(
                 dsn, metadata=metadata, tables=tables, create_tables=create_tables
@@ -381,10 +442,10 @@ class PostgresSink(Sink):
     # --- Sink API (caller thread; must be cheap + never raise) ---
 
     def emit_span(self, span: Span) -> None:
-        self._queue.put(("spans", span_row(span)))
+        self._queue.put(("spans", span_row(span, self._promoted)))
 
     def emit_log_record(self, record: LogRecord) -> None:
-        self._queue.put(route_log_record(record, self._typed))
+        self._queue.put(route_log_record(record, self._typed, self._promoted))
 
     def flush(self) -> None:
         """Block until everything enqueued so far has been written."""

@@ -108,6 +108,65 @@ def test_typed_log_record_row_without_blob_column_omits_blob():
     assert "response" not in row and "blob" not in row and row["a"] == "x"
 
 
+# --- promoted label columns (stripped from JSONB into real columns) -------
+
+def test_span_row_promotes_label_to_column_and_strips_from_jsonb():
+    span = Span(
+        operation_id="op", span_id="s1", parent_span_id=None, name="root",
+        status="success", started_at=1.0, labels={"trip_id": 7, "service": "itin"},
+    )
+    row = span_row(span, ["trip_id"])
+    assert row["trip_id"] == 7              # promoted to a top-level column
+    assert "trip_id" not in row["labels"]   # and removed from the JSONB blob
+    assert row["labels"] == {"service": "itin"}
+
+
+def test_span_row_promoted_label_absent_is_none():
+    span = Span(operation_id="op", span_id="s1", parent_span_id=None, name="root",
+                status="success", started_at=1.0, labels={"service": "itin"})
+    row = span_row(span, ["trip_id"])
+    assert row["trip_id"] is None           # column always present, even if unset
+    assert row["labels"] == {"service": "itin"}
+
+
+def test_log_record_and_typed_rows_promote_labels():
+    rec = LogRecord(operation_id="op", span_id="s", ts=1.0, kind="trace",
+                    fields={"n": 1}, labels={"trip_id": 9, "env": "test"})
+    row = log_record_row(rec, ["trip_id"])
+    assert row["trip_id"] == 9 and "trip_id" not in row["labels"]
+
+    tt = TypedEventTable(kind="llm_call", table="llm_calls", columns=[("model", str)])
+    rec2 = LogRecord(operation_id="op", span_id="s", ts=1.0, kind="llm_call",
+                     fields={"model": "gemini"}, labels={"trip_id": 9})
+    _, trow = route_log_record(rec2, {"llm_call": tt}, ["trip_id"])
+    assert trow["trip_id"] == 9 and "trip_id" not in trow["labels"]
+    assert trow["model"] == "gemini"
+
+
+def test_emit_promotes_trip_id_end_to_end(fake):
+    llm = TypedEventTable(kind="llm_call", table="llm_calls",
+                          columns=[("model", str)], blob_column="response")
+    sink = PostgresSink(backend=fake, retention=None,
+                        label_columns=[("trip_id", int)], typed_tables=[llm],
+                        flush_interval=0.01)
+    obslog.set_sink(sink)
+    try:
+        with obslog.bind_labels(trip_id=42):
+            with obslog.operation("op"):
+                obslog.trace("hi")
+                obslog.event("llm_call", model="gemini", blob="resp")
+        sink.flush()
+    finally:
+        sink.close()
+        sink_registry.reset()
+    span = fake.all_rows("spans")[0]
+    assert span["trip_id"] == 42 and "trip_id" not in span["labels"]
+    lr = fake.all_rows("log_records")[0]
+    assert lr["trip_id"] == 42 and "trip_id" not in lr["labels"]
+    llm_row = fake.all_rows("llm_calls")[0]
+    assert llm_row["trip_id"] == 42 and "trip_id" not in llm_row["labels"]
+
+
 # --- batching / threading / retention via a fake backend ------------------
 
 class FakeBackend:
@@ -267,7 +326,7 @@ def test_requires_dsn_or_backend():
     reason="set OBSLOG_TEST_DATABASE_URL to run the real-Postgres integration test",
 )
 def test_end_to_end_postgres_and_retention():
-    from sqlalchemy import Float, Text, create_engine, text
+    from sqlalchemy import Float, Integer, Text, create_engine, text
 
     from obslog.sinks.postgres import _sync_dsn, build_metadata
 
@@ -277,10 +336,11 @@ def test_end_to_end_postgres_and_retention():
         columns=[("model", Text), ("latency_ms", Float), ("status", Text)],
         blob_column="response",
     )
-    md, tables = build_metadata(indexed_labels=["trip_id"], typed_tables=[llm])
+    label_columns = [("trip_id", Integer)]
+    md, tables = build_metadata(label_columns=label_columns, typed_tables=[llm])
     engine = create_engine(_sync_dsn(dsn), future=True)
     md.drop_all(engine)
-    sink = PostgresSink(dsn, retention="3d", indexed_labels=["trip_id"],
+    sink = PostgresSink(dsn, retention="3d", label_columns=label_columns,
                         typed_tables=[llm], create_tables=True, flush_interval=0.01)
     obslog.set_sink(sink)
     try:
@@ -292,6 +352,13 @@ def test_end_to_end_postgres_and_retention():
             assert conn.execute(text("SELECT count(*) FROM spans")).scalar() == 2
             assert conn.execute(text("SELECT count(*) FROM log_records")).scalar() == 1
             assert conn.execute(text("SELECT count(*) FROM llm_calls")).scalar() == 1
+            # trip_id was promoted to a real column, queryable directly
+            assert conn.execute(text("SELECT count(*) FROM spans WHERE trip_id = 1")).scalar() == 2
+            assert conn.execute(text("SELECT count(*) FROM llm_calls WHERE trip_id = 1")).scalar() == 1
+            # and it was stripped from the JSONB labels blob
+            assert conn.execute(
+                text("SELECT labels ? 'trip_id' FROM spans LIMIT 1")
+            ).scalar() is False
             # backdate a span beyond the window, then prove retention deletes it
             conn.execute(text(
                 "UPDATE spans SET created_at = now() - interval '4 days' WHERE name='smoke'"
