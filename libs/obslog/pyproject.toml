@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "obslog"
+version = "0.1.0"
+description = "Structured span/event logging with ambient correlation and pluggable sinks"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+# The core is stdlib-only. Backends that need drivers declare them here so the
+# core stays dependency-free; install with e.g. `pip install obslog[postgres]`.
+[project.optional-dependencies]
+postgres = ["sqlalchemy>=2.0"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["obslog*"]
