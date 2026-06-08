@@ -14,15 +14,15 @@ import pytest
 
 import obslog
 from obslog import sink as sink_registry
-from obslog.records import Event, Span
+from obslog.records import LogRecord, Span
 from obslog.sinks.postgres import (
     PostgresSink,
     TypedEventTable,
-    event_row,
+    log_record_row,
     parse_retention,
-    route_event,
+    route_log_record,
     span_row,
-    typed_event_row,
+    typed_log_record_row,
 )
 
 
@@ -56,43 +56,55 @@ def test_span_row_converts_epoch_to_utc_datetime():
     assert row["labels"] == {"trip_id": 5} and row["attributes"] == {"source": "llm"}
 
 
-def test_event_row_keeps_blob_and_fields():
-    ev = Event(operation_id="op", span_id="s1", ts=1_700_000_000.0, kind="trace",
-               level="debug", message="hi", fields={"n": 3}, blob="big")
-    row = event_row(ev)
+def test_span_row_includes_diagnostic_fields():
+    span = Span(
+        operation_id="op", span_id="s1", parent_span_id=None, name="root",
+        status="success", started_at=1.0,
+        environment="prod", host="web-01", version="v1.2", retry_count=2,
+    )
+    row = span_row(span)
+    assert row["environment"] == "prod" and row["host"] == "web-01"
+    assert row["version"] == "v1.2" and row["retry_count"] == 2
+    assert row["user_id"] is None  # unset fields default to None
+
+
+def test_log_record_row_keeps_blob_and_fields():
+    rec = LogRecord(operation_id="op", span_id="s1", ts=1_700_000_000.0, kind="trace",
+                    level="debug", message="hi", fields={"n": 3}, blob="big")
+    row = log_record_row(rec)
     assert row["kind"] == "trace" and row["message"] == "hi"
     assert row["fields"] == {"n": 3} and row["blob"] == "big"
 
 
-def test_route_event_to_typed_table_promotes_columns():
+def test_route_log_record_to_typed_table_promotes_columns():
     llm = TypedEventTable(
         kind="llm_call", table="llm_calls",
         columns=[("model", str), ("latency_ms", float), ("status", str)],
         blob_column="response",
     )
-    ev = Event(operation_id="op", span_id="s1", ts=1.0, kind="llm_call",
-               fields={"model": "gemini", "latency_ms": 42.0, "status": "ok"},
-               blob="full response")
-    table, row = route_event(ev, {"llm_call": llm})
+    rec = LogRecord(operation_id="op", span_id="s1", ts=1.0, kind="llm_call",
+                    fields={"model": "gemini", "latency_ms": 42.0, "status": "ok"},
+                    blob="full response")
+    table, row = route_log_record(rec, {"llm_call": llm})
     assert table == "llm_calls"
     assert row["model"] == "gemini" and row["latency_ms"] == 42.0 and row["status"] == "ok"
     assert row["response"] == "full response"
     # promoted fields not present default to None, not KeyError
-    sparse = Event(operation_id="op", span_id="s", ts=1.0, kind="llm_call", fields={})
-    _, srow = route_event(sparse, {"llm_call": llm})
+    sparse = LogRecord(operation_id="op", span_id="s", ts=1.0, kind="llm_call", fields={})
+    _, srow = route_log_record(sparse, {"llm_call": llm})
     assert srow["model"] is None and srow["latency_ms"] is None
 
 
-def test_route_event_unregistered_kind_goes_to_events():
-    ev = Event(operation_id="op", span_id="s", ts=1.0, kind="trace", fields={})
-    table, _ = route_event(ev, {})
-    assert table == "events"
+def test_route_log_record_unregistered_kind_goes_to_log_records():
+    rec = LogRecord(operation_id="op", span_id="s", ts=1.0, kind="trace", fields={})
+    table, _ = route_log_record(rec, {})
+    assert table == "log_records"
 
 
-def test_typed_event_row_without_blob_column_omits_blob():
+def test_typed_log_record_row_without_blob_column_omits_blob():
     tt = TypedEventTable(kind="k", table="t", columns=[("a", str)])
-    ev = Event(operation_id="op", span_id="s", ts=1.0, kind="k", fields={"a": "x"}, blob="ignored")
-    row = typed_event_row(ev, tt)
+    rec = LogRecord(operation_id="op", span_id="s", ts=1.0, kind="k", fields={"a": "x"}, blob="ignored")
+    row = typed_log_record_row(rec, tt)
     assert "response" not in row and "blob" not in row and row["a"] == "x"
 
 
@@ -127,10 +139,6 @@ def fake():
     return FakeBackend()
 
 
-def _drain_sink(sink):
-    sink.flush()
-
-
 def test_emit_writes_rows_through_worker(fake):
     sink = PostgresSink(backend=fake, retention=None, flush_interval=0.01)
     obslog.set_sink(sink)
@@ -142,10 +150,10 @@ def test_emit_writes_rows_through_worker(fake):
         sink.close()
         sink_registry.reset()
     spans = fake.all_rows("spans")
-    events = fake.all_rows("events")
+    log_records = fake.all_rows("log_records")
     assert [s["status"] for s in spans] == ["running", "success"]
     assert spans[0]["labels"]["trip_id"] == 7
-    assert len(events) == 1 and events[0]["message"] == "hello"
+    assert len(log_records) == 1 and log_records[0]["message"] == "hello"
 
 
 def test_typed_event_routed_to_llm_calls(fake):
@@ -163,7 +171,7 @@ def test_typed_event_routed_to_llm_calls(fake):
     llm_rows = fake.all_rows("llm_calls")
     assert len(llm_rows) == 1 and llm_rows[0]["model"] == "gemini"
     assert llm_rows[0]["response"] == "resp"
-    assert fake.all_rows("events") == []  # routed away from the generic table
+    assert fake.all_rows("log_records") == []  # routed away from the generic table
 
 
 def test_batches_multiple_rows_into_few_inserts(fake):
@@ -177,10 +185,10 @@ def test_batches_multiple_rows_into_few_inserts(fake):
     finally:
         sink.close()
         sink_registry.reset()
-    # 50 trace events should be far fewer than 50 insert calls (batched).
-    event_inserts = [rows for name, rows in fake.inserts if name == "events"]
-    assert sum(len(r) for r in event_inserts) == 50
-    assert len(event_inserts) < 50
+    # 50 trace log_records should be far fewer than 50 insert calls (batched).
+    lr_inserts = [rows for name, rows in fake.inserts if name == "log_records"]
+    assert sum(len(r) for r in lr_inserts) == 50
+    assert len(lr_inserts) < 50
 
 
 def test_retention_sweep_runs_on_startup(fake):
@@ -282,7 +290,7 @@ def test_end_to_end_postgres_and_retention():
         sink.flush()
         with engine.begin() as conn:
             assert conn.execute(text("SELECT count(*) FROM spans")).scalar() == 2
-            assert conn.execute(text("SELECT count(*) FROM events")).scalar() == 1
+            assert conn.execute(text("SELECT count(*) FROM log_records")).scalar() == 1
             assert conn.execute(text("SELECT count(*) FROM llm_calls")).scalar() == 1
             # backdate a span beyond the window, then prove retention deletes it
             conn.execute(text(

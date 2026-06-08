@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import abc
 import threading
+import warnings
 from typing import Callable, Optional, Union
 
-from .records import Event, Span
+from .records import LogRecord, Span
 
-Record = Union[Span, Event]
+Record = Union[Span, LogRecord]
 Processor = Callable[[Record], Optional[Record]]
 
 
@@ -25,7 +26,7 @@ class Sink(abc.ABC):
     def emit_span(self, span: Span) -> None: ...
 
     @abc.abstractmethod
-    def emit_event(self, event: Event) -> None: ...
+    def emit_log_record(self, record: LogRecord) -> None: ...
 
     def flush(self) -> None:
         """Block until buffered records are persisted. No-op by default."""
@@ -40,10 +41,10 @@ class Sink(abc.ABC):
 class NullSink(Sink):
     """The default: drops everything. Keeps obslog a safe no-op until configured."""
 
-    def emit_span(self, span: Span) -> None:  # noqa: D102
+    def emit_span(self, span: Span) -> None:
         pass
 
-    def emit_event(self, event: Event) -> None:  # noqa: D102
+    def emit_log_record(self, record: LogRecord) -> None:
         pass
 
 
@@ -84,6 +85,27 @@ def reset() -> None:
         _service = None
 
 
+def require_labels(*keys: str) -> Processor:
+    """Return a processor that warns when a Span is missing required labels.
+
+    Register at startup to catch instrumentation gaps in tests before production:
+
+        configure(processors=[require_labels("trip_id")])
+
+    Warns rather than raises so a missing label never crashes production.
+    """
+    def _check(record: Record) -> Record:
+        if isinstance(record, Span):
+            missing = [k for k in keys if k not in record.labels]
+            if missing:
+                warnings.warn(
+                    f"obslog: span '{record.name}' is missing required labels: {missing}",
+                    stacklevel=4,
+                )
+        return record
+    return _check
+
+
 def _enrich(record: Record) -> Optional[Record]:
     """Apply service label + processors. A processor returning None DROPS the
     record (the structlog convention), so `_enrich` may return None."""
@@ -103,7 +125,7 @@ def emit_span(span: Span) -> None:
         get_sink().emit_span(record)
 
 
-def emit_event(event: Event) -> None:
-    record = _enrich(event)
+def emit_log_record(log_record: LogRecord) -> None:
+    record = _enrich(log_record)
     if record is not None:
-        get_sink().emit_event(record)
+        get_sink().emit_log_record(record)

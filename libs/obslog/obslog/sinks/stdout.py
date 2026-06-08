@@ -8,7 +8,7 @@ import sys
 import threading
 from typing import IO, Any
 
-from ..records import Event, Span
+from ..records import LogRecord, Span
 from ..sink import Sink
 
 
@@ -29,8 +29,8 @@ class StdoutSink(Sink):
     def emit_span(self, span: Span) -> None:
         self._write(_to_line("span", span))
 
-    def emit_event(self, event: Event) -> None:
-        self._write(_to_line("event", event))
+    def emit_log_record(self, record: LogRecord) -> None:
+        self._write(_to_line("log_record", record))
 
     def _write(self, line: str) -> None:
         stream = self._stream if self._stream is not None else sys.stdout
@@ -54,8 +54,8 @@ class JsonlFileSink(Sink):
     def emit_span(self, span: Span) -> None:
         self._append(_to_line("span", span))
 
-    def emit_event(self, event: Event) -> None:
-        self._append(_to_line("event", event))
+    def emit_log_record(self, record: LogRecord) -> None:
+        self._append(_to_line("log_record", record))
 
     def _append(self, line: str) -> None:
         with self._lock:

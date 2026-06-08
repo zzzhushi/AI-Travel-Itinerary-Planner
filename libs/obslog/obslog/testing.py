@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .records import Event, Span
+from .records import LogRecord, Span
 from .sink import Sink
 
 
@@ -11,17 +11,17 @@ class InMemorySink(Sink):
 
     def __init__(self) -> None:
         self.spans: list[Span] = []
-        self.events: list[Event] = []
+        self.log_records: list[LogRecord] = []
 
     def emit_span(self, span: Span) -> None:
         self.spans.append(span)
 
-    def emit_event(self, event: Event) -> None:
-        self.events.append(event)
+    def emit_log_record(self, record: LogRecord) -> None:
+        self.log_records.append(record)
 
     def clear(self) -> None:
         self.spans.clear()
-        self.events.clear()
+        self.log_records.clear()
 
     # --- convenience queries ---
     def spans_named(self, name: str) -> list[Span]:

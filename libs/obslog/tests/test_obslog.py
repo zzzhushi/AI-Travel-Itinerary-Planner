@@ -35,6 +35,17 @@ def test_span_emits_running_then_terminal_success(mem):
     assert terminal.duration_ms is not None and terminal.duration_ms >= 0
 
 
+def test_span_ids_are_uuid4_format(mem):
+    with obslog.operation("op") as op:
+        pass
+    import re
+    uuid4_re = re.compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    )
+    assert uuid4_re.match(op.operation_id), f"bad operation_id: {op.operation_id!r}"
+    assert uuid4_re.match(op.span_id), f"bad span_id: {op.span_id!r}"
+
+
 def test_exception_marks_failed_and_propagates(mem):
     with pytest.raises(ValueError):
         with obslog.operation("op"):
@@ -70,8 +81,8 @@ def test_trace_attaches_to_current_span(mem):
         obslog.trace("hello", n=1)
         with obslog.span("child") as child:
             obslog.trace("inside", n=2)
-    e_root = next(e for e in mem.events if e.message == "hello")
-    e_child = next(e for e in mem.events if e.message == "inside")
+    e_root = next(e for e in mem.log_records if e.message == "hello")
+    e_child = next(e for e in mem.log_records if e.message == "inside")
     assert e_root.span_id == root.span_id
     assert e_child.span_id == child.span_id
     assert e_root.operation_id == e_child.operation_id
@@ -84,7 +95,7 @@ def test_deep_trace_without_plumbing(mem):
 
     with obslog.operation("root") as root:
         helper()
-    e = mem.events[0]
+    e = mem.log_records[0]
     assert e.operation_id == root.operation_id and e.span_id == root.span_id
 
 
@@ -93,7 +104,7 @@ def test_deep_trace_without_plumbing(mem):
 def test_trace_is_noop_without_active_span(mem):
     obslog.trace("orphan", x=1)
     obslog.event("custom", message="orphan2")
-    assert mem.events == []
+    assert mem.log_records == []
 
 
 def test_noop_with_null_sink_does_not_raise():
@@ -123,7 +134,7 @@ def test_concurrency_isolation():
         op_a, op_b = asyncio.run(main())
         assert op_a != op_b
         by_op = {op_a: "a", op_b: "b"}
-        for e in s.events:  # each event's tag matches the op it belongs to
+        for e in s.log_records:  # each log_record's tag matches the op it belongs to
             assert e.fields["tag"] == by_op[e.operation_id]
         roots = [sp for sp in s.terminal_spans() if sp.parent_span_id is None]
         assert {r.operation_id for r in roots} == {op_a, op_b}
@@ -139,7 +150,7 @@ def test_bind_labels_inherited(mem):
             obslog.trace("t")
     term = mem.terminal_spans()[0]
     assert term.labels["request_id"] == "r1" and term.labels["trip_id"] == 5
-    assert mem.events[0].labels["request_id"] == "r1"
+    assert mem.log_records[0].labels["request_id"] == "r1"
 
 
 def test_child_inherits_parent_labels(mem):
@@ -170,7 +181,7 @@ def test_bind_context_carries_correlation_into_thread(mem):
         t.start()
         t.join()
     assert captured["op"] == root.operation_id
-    assert any(e.message == "in_thread" and e.operation_id == root.operation_id for e in mem.events)
+    assert any(e.message == "in_thread" and e.operation_id == root.operation_id for e in mem.log_records)
 
 
 def test_without_bind_context_thread_is_noop(mem):
@@ -181,7 +192,7 @@ def test_without_bind_context_thread_is_noop(mem):
         t = threading.Thread(target=work)  # fresh empty context → no active span
         t.start()
         t.join()
-    assert all(e.message != "in_thread" for e in mem.events)
+    assert all(e.message != "in_thread" for e in mem.log_records)
 
 
 # --- crash detection, processors, dual sync/async -------------------------
@@ -205,7 +216,7 @@ def test_processors_and_service_label():
     try:
         with obslog.operation("op"):
             obslog.trace("t")
-        for rec in s.spans + s.events:
+        for rec in s.spans + s.log_records:
             assert rec.labels["service"] == "svc" and rec.labels["env"] == "test"
     finally:
         sink_registry.reset()
@@ -235,7 +246,36 @@ def test_processor_returning_none_drops_record():
     try:
         with obslog.operation("op"):
             obslog.trace("t")
-        assert s.spans == [] and s.events == []
+        assert s.spans == [] and s.log_records == []
+    finally:
+        sink_registry.reset()
+
+
+def test_require_labels_warns_when_missing(mem):
+    import warnings
+
+    obslog.configure(processors=[obslog.require_labels("trip_id")])
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with obslog.operation("op"):  # no trip_id label
+                pass
+        messages = [str(w.message) for w in caught]
+        assert any("trip_id" in m for m in messages)
+    finally:
+        sink_registry.reset()
+
+
+def test_require_labels_no_warning_when_present(mem):
+    import warnings
+
+    obslog.configure(processors=[obslog.require_labels("trip_id")])
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with obslog.operation("op", labels={"trip_id": 1}):
+                pass
+        assert not caught
     finally:
         sink_registry.reset()
 
@@ -279,5 +319,5 @@ def test_jsonl_file_sink_appends_and_closes(tmp_path):
         sink.close()
         sink_registry.reset()
     lines = [l for l in path.read_text().splitlines() if l]
-    # running + terminal span, plus one trace event
+    # running + terminal span, plus one trace log_record
     assert len(lines) == 3

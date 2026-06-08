@@ -18,8 +18,8 @@ signatures, and every emitter is no-op-safe when no span is active.
 """
 
 from .context import bind_context, bind_labels, current_span
-from .records import Event, Span, Status
-from .sink import NullSink, Sink, configure, get_sink, set_sink
+from .records import LogRecord, Span, Status
+from .sink import NullSink, Sink, configure, get_sink, require_labels, set_sink
 from .tracer import event, new_operation_id, operation, span, trace
 
 __all__ = [
@@ -36,10 +36,11 @@ __all__ = [
     "configure",
     "set_sink",
     "get_sink",
+    "require_labels",
     # sinks / records (concrete sinks live in obslog.sinks; InMemorySink in obslog.testing)
     "Sink",
     "NullSink",
     "Span",
-    "Event",
+    "LogRecord",
     "Status",
 ]

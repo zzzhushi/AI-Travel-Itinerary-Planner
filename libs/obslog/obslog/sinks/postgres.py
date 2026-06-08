@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from ..records import Event, Span
+from ..records import LogRecord, Span
 from ..sink import Sink
 
 # ---------------------------------------------------------------------------
@@ -104,46 +104,60 @@ def span_row(span: Span) -> dict[str, Any]:
         "error": span.error,
         "labels": dict(span.labels),
         "attributes": dict(span.attributes),
+        # diagnostic fields (None when not set)
+        "version": span.version,
+        "environment": span.environment,
+        "host": span.host,
+        "region": span.region,
+        "user_id": span.user_id,
+        "session_id": span.session_id,
+        "client_platform": span.client_platform,
+        "retry_count": span.retry_count,
+        "http_status_code": span.http_status_code,
+        "feature_flags": span.feature_flags,
+        "correlation_id": span.correlation_id,
+        "parent_request_id": span.parent_request_id,
+        "idempotency_key": span.idempotency_key,
     }
 
 
-def event_row(event: Event) -> dict[str, Any]:
+def log_record_row(record: LogRecord) -> dict[str, Any]:
     return {
         "created_at": _now(),
-        "ts": _epoch_to_dt(event.ts),
-        "operation_id": event.operation_id,
-        "span_id": event.span_id,
-        "kind": event.kind,
-        "level": event.level,
-        "message": event.message,
-        "fields": dict(event.fields),
-        "blob": event.blob,
-        "labels": dict(event.labels),
+        "ts": _epoch_to_dt(record.ts),
+        "operation_id": record.operation_id,
+        "span_id": record.span_id,
+        "kind": record.kind,
+        "level": record.level,
+        "message": record.message,
+        "fields": dict(record.fields),
+        "blob": record.blob,
+        "labels": dict(record.labels),
     }
 
 
-def typed_event_row(event: Event, typed: TypedEventTable) -> dict[str, Any]:
+def typed_log_record_row(record: LogRecord, typed: TypedEventTable) -> dict[str, Any]:
     row: dict[str, Any] = {
         "created_at": _now(),
-        "operation_id": event.operation_id,
-        "span_id": event.span_id,
-        "labels": dict(event.labels),
+        "operation_id": record.operation_id,
+        "span_id": record.span_id,
+        "labels": dict(record.labels),
     }
     for name, _type in typed.columns:
-        row[name] = event.fields.get(name)
+        row[name] = record.fields.get(name)
     if typed.blob_column is not None:
-        row[typed.blob_column] = event.blob
+        row[typed.blob_column] = record.blob
     return row
 
 
-def route_event(
-    event: Event, typed_tables: dict[str, TypedEventTable]
+def route_log_record(
+    record: LogRecord, typed_tables: dict[str, TypedEventTable]
 ) -> tuple[str, dict[str, Any]]:
-    """Return (table_name, row) for an event — a typed table if registered, else `events`."""
-    typed = typed_tables.get(event.kind)
+    """Return (table_name, row) for a LogRecord — typed table if registered, else `log_records`."""
+    typed = typed_tables.get(record.kind)
     if typed is not None:
-        return typed.table, typed_event_row(event, typed)
-    return "events", event_row(event)
+        return typed.table, typed_log_record_row(record, typed)
+    return "log_records", log_record_row(record)
 
 
 # ---------------------------------------------------------------------------
@@ -164,15 +178,17 @@ def build_metadata(
     """
     from sqlalchemy import (
         BigInteger,
+        Boolean,
         Column,
         DateTime,
         Float,
         Index,
+        Integer,
         MetaData,
         Table,
         Text,
     )
-    from sqlalchemy.dialects.postgresql import JSONB
+    from sqlalchemy.dialects.postgresql import JSONB, UUID
 
     indexed_labels = indexed_labels or []
     md = MetaData(schema=schema)
@@ -187,14 +203,18 @@ def build_metadata(
         for label in indexed_labels:
             Index(f"ix_{table_name}_{label}", columns["labels"][label].astext)
 
+    # IDs use the native UUID type (16 bytes, natively indexed); as_uuid=False
+    # means SQLAlchemy accepts/returns plain strings — no uuid.UUID objects needed.
+    _UUID = UUID(as_uuid=False)
+
     spans = Table(
         "spans",
         md,
         Column("id", BigInteger, primary_key=True, autoincrement=True),
         Column("created_at", DateTime(timezone=True), nullable=False),
-        Column("operation_id", Text, nullable=False),
-        Column("span_id", Text, nullable=False),
-        Column("parent_span_id", Text, nullable=True),
+        Column("operation_id", _UUID, nullable=False),
+        Column("span_id", _UUID, nullable=False),
+        Column("parent_span_id", _UUID, nullable=True),
         Column("name", Text, nullable=False),
         Column("status", Text, nullable=False),
         Column("started_at", DateTime(timezone=True), nullable=True),
@@ -203,18 +223,36 @@ def build_metadata(
         Column("error", Text, nullable=True),
         Column("labels", JSONB, nullable=False),
         Column("attributes", JSONB, nullable=False),
+        # deployment context
+        Column("version", Text, nullable=True),
+        Column("environment", Text, nullable=True),
+        Column("host", Text, nullable=True),
+        Column("region", Text, nullable=True),
+        # per-request identity
+        Column("user_id", Text, nullable=True),
+        Column("session_id", Text, nullable=True),
+        Column("client_platform", JSONB, nullable=True),
+        # reliability
+        Column("retry_count", Integer, nullable=True),
+        Column("http_status_code", Integer, nullable=True),
+        # feature control
+        Column("feature_flags", JSONB, nullable=True),
+        # cross-system correlation
+        Column("correlation_id", Text, nullable=True),
+        Column("parent_request_id", Text, nullable=True),
+        Column("idempotency_key", Text, nullable=True),
     )
     Index("ix_spans_parent_span_id", spans.c.parent_span_id)
     _label_indexes("spans", spans.c)
 
-    events = Table(
-        "events",
+    log_records = Table(
+        "log_records",
         md,
         Column("id", BigInteger, primary_key=True, autoincrement=True),
         Column("created_at", DateTime(timezone=True), nullable=False),
         Column("ts", DateTime(timezone=True), nullable=True),
-        Column("operation_id", Text, nullable=True),
-        Column("span_id", Text, nullable=True),
+        Column("operation_id", _UUID, nullable=True),
+        Column("span_id", _UUID, nullable=True),
         Column("kind", Text, nullable=False),
         Column("level", Text, nullable=False),
         Column("message", Text, nullable=True),
@@ -222,16 +260,16 @@ def build_metadata(
         Column("blob", Text, nullable=True),
         Column("labels", JSONB, nullable=False),
     )
-    _label_indexes("events", events.c)
+    _label_indexes("log_records", log_records.c)
 
-    tables = {"spans": spans, "events": events}
+    tables = {"spans": spans, "log_records": log_records}
 
     for typed in typed_tables or []:
         cols = [
             Column("id", BigInteger, primary_key=True, autoincrement=True),
             Column("created_at", DateTime(timezone=True), nullable=False),
-            Column("operation_id", Text, nullable=True),
-            Column("span_id", Text, nullable=True),
+            Column("operation_id", _UUID, nullable=True),
+            Column("span_id", _UUID, nullable=True),
             Column("labels", JSONB, nullable=False),
         ]
         for name, col_type in typed.columns:
@@ -345,8 +383,8 @@ class PostgresSink(Sink):
     def emit_span(self, span: Span) -> None:
         self._queue.put(("spans", span_row(span)))
 
-    def emit_event(self, event: Event) -> None:
-        self._queue.put(route_event(event, self._typed))
+    def emit_log_record(self, record: LogRecord) -> None:
+        self._queue.put(route_log_record(record, self._typed))
 
     def flush(self) -> None:
         """Block until everything enqueued so far has been written."""

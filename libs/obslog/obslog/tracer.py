@@ -13,15 +13,16 @@ from typing import Any, Optional
 
 from . import context as _ctx
 from . import sink as _sink
-from .records import Event, Span, Status
+from .records import LogRecord, Span, Status
 
 
 def new_operation_id() -> str:
-    return uuid.uuid4().hex
+    """Return a new UUID4 string (dashed format) for a root operation."""
+    return str(uuid.uuid4())
 
 
 def _new_span_id() -> str:
-    return uuid.uuid4().hex
+    return str(uuid.uuid4())
 
 
 class SpanHandle:
@@ -80,9 +81,9 @@ class SpanHandle:
         blob: Optional[str] = None,
         **fields: Any,
     ) -> None:
-        """Emit an arbitrary typed event tied to this span."""
-        _sink.emit_event(
-            Event(
+        """Emit an arbitrary typed LogRecord tied to this span."""
+        _sink.emit_log_record(
+            LogRecord(
                 operation_id=self.operation_id,
                 span_id=self.span_id,
                 ts=time.time(),
@@ -216,7 +217,7 @@ def event(
     blob: Optional[str] = None,
     **fields: Any,
 ) -> None:
-    """Emit a typed event on the current span. No-op if no span is active."""
+    """Emit a typed LogRecord on the current span. No-op if no span is active."""
     cur = _ctx.current_span()
     if cur is None:
         return
