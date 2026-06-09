@@ -14,6 +14,7 @@ import threading
 from datetime import date
 from typing import Optional
 
+import obslog
 from src.workers.researcher import ResearcherAgent, RESEARCHER_INSTRUCTION
 from src.workers.planner import (
     DeterministicPlanner,
@@ -97,12 +98,13 @@ async def research_batch(
     if not activities:
         return []
 
-    results: list[tuple[list[dict], str]] = []
-    researcher = _get_researcher()
-    for start in range(0, len(activities), batch_size):
-        chunk = activities[start:start + batch_size]
-        batch_results = await researcher.research_batch(destination, chunk)
-        results.extend(batch_results)
+    async with obslog.span("research_batch", activity_count=len(activities), destination=destination):
+        results: list[tuple[list[dict], str]] = []
+        researcher = _get_researcher()
+        for start in range(0, len(activities), batch_size):
+            chunk = activities[start:start + batch_size]
+            batch_results = await researcher.research_batch(destination, chunk)
+            results.extend(batch_results)
 
     return results
 
@@ -127,20 +129,25 @@ async def generate_schedule(
     model can sequence clusters by real travel time. The DeterministicPlanner
     ignores it.
     """
-    if use_llm_refinement:
-        result = await _get_llm_planner().plan(
-            options, num_days,
-            destination=destination,
-            start_date=start_date,
-            min_rating=min_rating,
-            travel_matrix=travel_matrix,
-        )
-        if result.day_plans:
-            return result
-        # LLM failed or unusable — fall back to deterministic, carry the warning.
-        llm_warning = result.warning
-        fallback = await _deterministic_planner.plan(options, num_days, min_rating=min_rating)
-        fallback.warning = llm_warning or "LLM produced an unusable schedule; using deterministic fallback."
-        return fallback
+    async with obslog.span("generate_schedule", destination=destination, num_days=num_days) as sp:
+        if use_llm_refinement:
+            result = await _get_llm_planner().plan(
+                options, num_days,
+                destination=destination,
+                start_date=start_date,
+                min_rating=min_rating,
+                travel_matrix=travel_matrix,
+            )
+            if result.day_plans:
+                sp.set(source=result.source)
+                return result
+            # LLM failed or unusable — fall back to deterministic, carry the warning.
+            llm_warning = result.warning
+            fallback = await _deterministic_planner.plan(options, num_days, min_rating=min_rating)
+            fallback.warning = llm_warning or "LLM produced an unusable schedule; using deterministic fallback."
+            sp.set(source=fallback.source, fallback=True)
+            return fallback
 
-    return await _deterministic_planner.plan(options, num_days, min_rating=min_rating)
+        result = await _deterministic_planner.plan(options, num_days, min_rating=min_rating)
+        sp.set(source=result.source)
+        return result

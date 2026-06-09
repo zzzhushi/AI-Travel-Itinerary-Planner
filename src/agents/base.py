@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
+from contextlib import contextmanager
 from typing import Any
 
+import obslog
 from google.genai import types
 
 from src.agents.providers import LLMProvider
@@ -22,6 +25,54 @@ class LlmAgent:
 
     async def ask(self, prompt: str) -> tuple[str, str]:
         return await self._provider.ask(prompt)
+
+
+class _LlmCall:
+    """Records the outcome of one provider call for `instrument_llm_call`.
+
+    `ok()` / `failed()` both record the result *and* return the `(text, error)`
+    tuple the provider's `ask()` hands back, so a call site is a one-liner.
+    """
+
+    def __init__(self) -> None:
+        self.text: str = ""
+        self.error: str = ""
+
+    def ok(self, text: str) -> tuple[str, str]:
+        self.text = text
+        return text, ""
+
+    def failed(self, error: str) -> tuple[str, str]:
+        self.error = error
+        return "", error
+
+
+@contextmanager
+def instrument_llm_call(agent_name: str, model: str, prompt: str):
+    """Time an LLM call and emit one `llm_call` obslog event when it ends.
+
+    Every `LLMProvider.ask()` wraps its API call in this, so the timing and the
+    event shape live in one place and are identical across providers (Gemini
+    today, OpenAI/Anthropic later). Latency is measured automatically from
+    enter→exit — the provider only records the outcome via the yielded `_LlmCall`
+    (`call.ok(text)` / `call.failed(msg)`). The event is a no-op unless a span is
+    active (it routes to the `llm_calls` table; see `route_log_record`)."""
+    call = _LlmCall()
+    t0 = time.monotonic()
+    try:
+        yield call
+    finally:
+        obslog.event(
+            "llm_call",
+            agent_name=agent_name,
+            model=model,
+            status="error" if call.error else "ok",
+            latency_ms=round((time.monotonic() - t0) * 1000, 1),
+            prompt_chars=len(prompt),
+            response_chars=len(call.text),
+            error=call.error or None,
+            blob=call.text or None,
+        )
 
 
 def _retry_config(attempts: int = 5, exp_base: int = 7) -> types.HttpRetryOptions:
