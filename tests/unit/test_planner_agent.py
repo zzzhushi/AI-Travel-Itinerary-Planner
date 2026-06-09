@@ -20,7 +20,9 @@ from src.workers.planner.llm import (
     PLANNER_INSTRUCTION,
     _build_prompt,
     _format_travel_matrix,
+    apply_llm_refinement,
 )
+from src.workers.preferences import Preferences
 from tests.mocks.provider import MockProvider
 
 
@@ -62,7 +64,9 @@ class _CapturingProvider(LLMProvider):
         return self._response, ""
 
 
-def _clustered_item(option_id: int, cluster_id: int, cluster_name: str) -> ScheduleItem:
+def _clustered_item(
+    option_id: int, cluster_id: int, cluster_name: str, price_level: int | None = None
+) -> ScheduleItem:
     return ScheduleItem(
         option_id=option_id,
         name=f"Place {option_id}",
@@ -71,6 +75,7 @@ def _clustered_item(option_id: int, cluster_id: int, cluster_name: str) -> Sched
         longitude=139.7 + option_id * 0.01,
         user_rating=4,
         duration_minutes=120,
+        price_level=price_level,
         cluster_id=cluster_id,
         cluster_name=cluster_name,
     )
@@ -163,11 +168,37 @@ class TestPlannerInstructionCovers:
         assert "total travel" in lowered        # minimise total travel
         assert "honor them as fact" in lowered  # durations are the user's choice
 
-    def test_instruction_pushes_to_fill_the_evening(self):
+    def test_instruction_is_pace_and_window_aware(self):
         lowered = PLANNER_INSTRUCTION.lower()
-        assert "fill the day" in lowered        # don't quit mid-afternoon
+        assert "pace" in lowered                # pace-conditional fill
+        assert "packed" in lowered              # packed pace fills the day
+        assert "relaxed" in lowered             # relaxed pace stays light
         assert "dinner" in lowered              # evening meal
-        assert "21:00" in PLANNER_INSTRUCTION   # use the window to ~21:00
+        assert "day_end" in lowered             # defers to the per-trip window
+
+    def test_instruction_covers_geographic_day_partition(self):
+        lowered = PLANNER_INSTRUCTION.lower()
+        assert "whole-trip partition" in lowered     # balanced day assignment
+        assert "leftover bucket" in lowered          # no orphan-dump last day
+        assert "own day" in lowered and "dropped" in lowered  # far venue → own day or drop
+
+    def test_instruction_covers_budget_and_price(self):
+        lowered = PLANNER_INSTRUCTION.lower()
+        assert "price_level" in lowered            # price signal is documented
+        assert "window-shopping" in lowered or "browsing" in lowered  # spend, not prestige
+
+    def test_instruction_covers_meal_cadence_and_ordering(self):
+        lowered = PLANNER_INSTRUCTION.lower()
+        assert "meal cadence" in lowered            # explicit per-day meal slots
+        assert "lunch" in lowered and "dinner" in lowered
+        assert "after dinner" in lowered            # dessert sequencing
+        assert "ordering matters" in lowered
+
+    def test_instruction_has_travel_arithmetic_and_self_check(self):
+        lowered = PLANNER_INSTRUCTION.lower()
+        assert "hard arithmetic" in lowered         # travel as a hard rule
+        assert "silently verify" in lowered         # pre-output self-check
+        assert "repeat" in lowered or "repeats" in lowered  # no-duplicate check
 
     def test_instruction_forbids_reusing_an_option(self):
         lowered = PLANNER_INSTRUCTION.lower()
@@ -366,3 +397,76 @@ class TestLlmPlannerWindowAndLocking:
         result = await planner.plan(_make_options(2), num_days=1, destination="Tokyo")
         starts = [i.start_minutes for i in result.day_plans[0].items]
         assert starts == sorted(starts)
+
+
+class TestBuildPromptPreferences:
+    def _day_plans(self) -> list[DayPlan]:
+        return [DayPlan(day_number=1, items=[_clustered_item(1, 0, "Asakusa")])]
+
+    def test_window_line_uses_preference_values(self):
+        prefs = Preferences(day_start_minutes=600, day_end_minutes=1200)
+        prompt = _build_prompt(self._day_plans(), "Tokyo", preferences=prefs)
+        assert "day_start 600 (10:00)" in prompt
+        assert "day_end 1200 (20:00)" in prompt
+
+    def test_default_window_when_no_preferences(self):
+        prompt = _build_prompt(self._day_plans(), "Tokyo")
+        assert "day_start 540 (09:00)" in prompt
+        assert "day_end 1260 (21:00)" in prompt
+
+    def test_preferences_block_rendered(self):
+        prefs = Preferences(
+            pace="relaxed", budget="splurge",
+            interests=["food", "temples"], notes="traveling with parents",
+        )
+        prompt = _build_prompt(self._day_plans(), "Tokyo", preferences=prefs)
+        assert "Traveler preferences:" in prompt
+        assert "Pace:" in prompt and "Relaxed" in prompt
+        assert "Budget:" in prompt
+        assert "food, temples" in prompt
+        assert "traveling with parents" in prompt
+
+    def test_no_block_when_only_window_set(self):
+        prefs = Preferences(day_start_minutes=600, day_end_minutes=1200)
+        prompt = _build_prompt(self._day_plans(), "Tokyo", preferences=prefs)
+        assert "Traveler preferences:" not in prompt
+
+
+class TestBuildPromptPriceLevel:
+    def test_price_rendered_when_present(self):
+        dp = [DayPlan(day_number=1, items=[_clustered_item(1, 0, "Ginza", price_level=4)])]
+        assert "price 4/4" in _build_prompt(dp, "Tokyo")
+
+    def test_price_omitted_when_absent(self):
+        dp = [DayPlan(day_number=1, items=[_clustered_item(1, 0, "Ginza")])]
+        assert "price" not in _build_prompt(dp, "Tokyo").split("Candidate stops")[1]
+
+
+class TestApplyRefinementWindow:
+    def _originals(self) -> list[DayPlan]:
+        return [DayPlan(day_number=1, items=[
+            _clustered_item(1, 0, "A"),
+            _clustered_item(2, 0, "A"),
+        ])]
+
+    def test_custom_day_end_caps_unlocked_items(self):
+        # opt 2 is placed at 1150, past a custom day_end of 1140 → dropped.
+        llm_days = [{"day": 1, "items": [
+            {"option_id": 1, "start_minutes": 600, "note": "ok"},
+            {"option_id": 2, "start_minutes": 1150, "note": "too late"},
+        ]}]
+        refined = apply_llm_refinement(
+            llm_days, self._originals(), num_days=1, day_start=600, day_end=1140
+        )
+        placed = {i.option_id for dp in refined for i in dp.items}
+        assert placed == {1}  # opt 2 dropped by the custom window cap
+
+    def test_default_day_end_allows_later_items(self):
+        # Same placement, but the default window (1260) admits opt 2.
+        llm_days = [{"day": 1, "items": [
+            {"option_id": 1, "start_minutes": 600, "note": "ok"},
+            {"option_id": 2, "start_minutes": 1150, "note": "fits default"},
+        ]}]
+        refined = apply_llm_refinement(llm_days, self._originals(), num_days=1)
+        placed = {i.option_id for dp in refined for i in dp.items}
+        assert placed == {1, 2}

@@ -9,15 +9,19 @@ import pytest
 from src.db.queries import (
     add_activity,
     create_trip,
+    get_or_create_preferences,
     get_rated_options_for_schedule,
     get_trips,
     get_unresearched_activities,
     mark_researched,
+    reset_research_state,
     save_options,
     set_option_duration,
     set_rating,
+    update_preferences,
     upsert_schedule,
 )
+from src.db.models import Option, ScheduledItem as ScheduledItemModel
 from src.workers.planner import DayPlan, ScheduleItem
 
 
@@ -184,7 +188,7 @@ class TestGetRatedOptionsForSchedule:
         row = result[0]
         for key in ("option_id", "name", "category", "latitude", "longitude",
                     "user_rating", "is_locked", "day_number", "start_minutes",
-                    "time_slot", "default_duration_minutes"):
+                    "time_slot", "default_duration_minutes", "price_level"):
             assert key in row, f"Missing key: {key}"
 
     def test_prefers_option_category_over_activity_category(self, session):
@@ -405,3 +409,73 @@ class TestDurationColumns:
         result = get_schedule(session, trip.id)
         assert result[0].start_minutes == 540   # morning first
         assert result[1].start_minutes == 780   # afternoon second
+
+
+class TestPreferences:
+    def test_get_or_create_is_idempotent(self, session):
+        trip = _make_trip(session)
+        p1 = get_or_create_preferences(session, trip.id)
+        p2 = get_or_create_preferences(session, trip.id)
+        assert p1.id == p2.id  # same row, not a duplicate
+
+    def test_update_enum_fields(self, session):
+        trip = _make_trip(session)
+        prefs = update_preferences(session, trip.id, "pace", "relaxed")
+        assert prefs.pace == "relaxed"
+        prefs = update_preferences(session, trip.id, "budget", "splurge")
+        assert prefs.budget == "splurge"
+
+    def test_invalid_enum_resets_to_none(self, session):
+        trip = _make_trip(session)
+        update_preferences(session, trip.id, "pace", "relaxed")
+        prefs = update_preferences(session, trip.id, "pace", "bogus")
+        assert prefs.pace is None
+
+    def test_unknown_field_ignored(self, session):
+        trip = _make_trip(session)
+        # Allowlist: writing a non-preference attribute must not take effect.
+        prefs = update_preferences(session, trip.id, "trip_id", "999")
+        assert prefs.trip_id == trip.id
+
+    def test_interests_parsed_to_list(self, session):
+        trip = _make_trip(session)
+        prefs = update_preferences(session, trip.id, "interests", " food , temples ,, ")
+        assert prefs.interests == ["food", "temples"]
+
+    def test_empty_interests_become_none(self, session):
+        trip = _make_trip(session)
+        prefs = update_preferences(session, trip.id, "interests", "  ,  ")
+        assert prefs.interests is None
+
+    def test_window_parsed_from_hhmm(self, session):
+        trip = _make_trip(session)
+        prefs = update_preferences(session, trip.id, "day_start_minutes", "10:30")
+        assert prefs.day_start_minutes == 630
+        prefs = update_preferences(session, trip.id, "day_end_minutes", "20:00")
+        assert prefs.day_end_minutes == 1200
+
+    def test_invalid_time_becomes_none(self, session):
+        trip = _make_trip(session)
+        prefs = update_preferences(session, trip.id, "day_start_minutes", "25:99")
+        assert prefs.day_start_minutes is None
+
+
+class TestResetResearchState:
+    def test_clears_options_schedule_and_researched_flag(self, session):
+        trip = _make_trip(session)
+        act = _make_activity(session, trip)
+        opts = _make_options(session, act, n=2)
+        mark_researched(session, act.id)
+        # Place one option on the schedule.
+        session.add(ScheduledItemModel(
+            trip_id=trip.id, option_id=opts[0].id, day_number=1, start_minutes=540,
+        ))
+        session.commit()
+
+        reset_research_state(session, trip.id)
+
+        assert session.query(Option).filter(Option.activity_id == act.id).count() == 0
+        assert session.query(ScheduledItemModel).filter(
+            ScheduledItemModel.trip_id == trip.id
+        ).count() == 0
+        assert get_unresearched_activities(session, trip.id)  # act is unresearched again

@@ -41,7 +41,7 @@ run_web.py    # Entry point: uvicorn web.app:app
 - **Activity** — user's query (vague or specific), category, is_specific flag
 - **Option** — researched result: name, category, address, location, maps_link, lat/lng, user_rating (1–5), default_duration_minutes (user-overridable; NULL = category default). category comes from the researcher and is preferred over Activity.category when scheduling.
 - **ScheduledItem** — option placed on a day_number + time_slot (+ start_minutes / duration_minutes for the timeline), with is_locked flag
-- **TripPreferences** — per-trip interests list, notes (for future travel style expansion)
+- **TripPreferences** — per-trip travel style: pace (PACE_CHOICES), budget (BUDGET_CHOICES), interests list, notes, and an optional day window (day_start_minutes/day_end_minutes). All nullable (NULL = no preference). Loaded into the `Preferences` DTO (`src/workers/preferences.py`) and fed to both the researcher (soft bias) and the planner (scheduling + window). Edited on the dashboard Preferences tab.
 
 day_number is 1-based and nullable. When Trip.start_date is set, UI converts to real dates.
 
@@ -86,7 +86,7 @@ pytest
 - **Strategy pattern for scheduling**: `DeterministicPlanner` and `LlmPlanner` both implement the `SchedulePlanner` Protocol (async `plan() → PlanResult`). `orchestrator.generate_schedule` is the coordinator: it tries `LlmPlanner` first, then falls back to `DeterministicPlanner` on any failure. Callers use `PlanResult.source` ("llm" | "deterministic") to know which ran.
 - **Service layer**: `src/services/trip_service.py` holds business logic shared between the CLI and web routes. The call chain is: UI → services → (orchestrator + clients) → workers → providers.
 - **Idempotent research**: `Activity.researched_at` is set by `mark_researched()` after a successful run. `get_unresearched_activities()` filters on `researched_at IS NULL`, so already-researched activities are never re-sent to the LLM.
-- **Day-window enforcement**: Both planners bound each day to 09:00–21:00. `DeterministicPlanner` drops lowest-rated overflow items that don't fit the window (`_fit_day_within_window`). `LlmPlanner` rejects unlocked items starting at/after `DAY_END_MINUTES` in `apply_llm_refinement`. Locked items are never dropped by either planner.
+- **Day-window enforcement**: Both planners bound each day to a per-trip window resolved from `TripPreferences` (`day_start_minutes`/`day_end_minutes`), defaulting to 09:00–21:00 (`DAY_START_MINUTES`/`DAY_END_MINUTES`) when unset. The window is threaded through `generate_schedule` → `plan()` as `Preferences`. `DeterministicPlanner` drops lowest-rated overflow items that don't fit the window (`_fit_day_within_window`); `LlmPlanner` rejects unlocked items starting at/after the window end in `apply_llm_refinement`. Locked items are never dropped by either planner. Pace/budget/interests bias the **LlmPlanner** only — the deterministic fallback honors just the window.
 - **Locked items**: `ScheduledItem.is_locked = True` pins an item to its day and `start_minutes`. The planner never moves or drops locked items — even if the LLM omits them, they are re-attached at their pinned time. The pinned `start_minutes` is plumbed from the DB through `get_rated_options_for_schedule` so it survives repeated regenerations.
 - **day_number vs real dates**: Schedule uses day_number (1-based) until Trip.start_date is provided.
 
@@ -124,3 +124,5 @@ pytest
 - Budget tracking
 - Notes per activity
 - Undo/redo on schedule
+- CLI preference collection (preferences are web-only; the CLI does not yet prompt for pace/budget/interests/notes)
+- Morning/evening *style* presets (the day window is set directly via start/end times instead)

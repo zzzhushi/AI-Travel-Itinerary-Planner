@@ -7,8 +7,40 @@ import json
 
 import pytest
 
-from src.workers.researcher import ResearcherAgent, _normalize
+from src.workers.researcher import (
+    ResearcherAgent,
+    _build_batch_prompt,
+    _build_prompt,
+    _normalize,
+)
+from src.workers.preferences import Preferences
 from tests.mocks.provider import MockProvider
+
+
+class TestPreferencesInPrompt:
+    def test_batch_prompt_includes_bias_when_set(self):
+        prefs = Preferences(budget="splurge", interests=["food"], notes="with parents")
+        prompt = _build_batch_prompt("Tokyo", [{"query": "ramen", "is_specific": False}], prefs)
+        assert "Traveler preferences" in prompt
+        assert "premium" in prompt.lower()  # splurge budget hint
+        assert "food" in prompt
+        assert "with parents" in prompt
+
+    def test_batch_prompt_unchanged_when_no_bias(self):
+        # Pace/window are not research bias, so the block is omitted.
+        prefs = Preferences(pace="packed", day_start_minutes=600)
+        prompt = _build_batch_prompt("Tokyo", [{"query": "ramen", "is_specific": False}], prefs)
+        assert "Traveler preferences" not in prompt
+
+    def test_single_prompt_includes_bias(self):
+        prefs = Preferences(interests=["temples"])
+        prompt = _build_prompt("Tokyo", "things to do", False, prefs)
+        assert "temples" in prompt
+
+    def test_none_preferences_omits_block(self):
+        assert "Traveler preferences" not in _build_batch_prompt(
+            "Tokyo", [{"query": "ramen", "is_specific": False}], None
+        )
 
 
 def _make_options_json(n: int = 3, include_name: bool = True) -> str:

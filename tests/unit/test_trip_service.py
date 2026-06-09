@@ -18,6 +18,7 @@ from src.db.queries import (
     mark_researched,
     save_options,
     set_rating,
+    update_preferences,
 )
 from src.services.trip_service import (
     generate_and_save_schedule,
@@ -75,6 +76,20 @@ class TestResearchActivities:
         assert summaries[1] == {"query": "temples", "options_saved": 2, "error": ""}
         # Both should now be researched
         assert get_unresearched_activities(session, trip.id) == []
+
+    @pytest.mark.asyncio
+    async def test_preferences_passed_to_research_batch(self, session):
+        trip = create_trip(session, "Test", "Tokyo", 3)
+        add_activity(session, trip.id, "ramen", "food", False)
+        update_preferences(session, trip.id, "budget", "splurge")
+        session.refresh(trip)
+
+        with patch("src.services.trip_service.research_batch", new_callable=AsyncMock) as m:
+            m.return_value = [([_make_option_dict("Ramen")], "")]
+            await research_activities(session, trip)
+
+        prefs = m.call_args.kwargs["preferences"]
+        assert prefs.budget == "splurge"
 
     @pytest.mark.asyncio
     async def test_agent_error_not_saved_and_included_in_summary(self, session):
@@ -161,6 +176,21 @@ class TestGenerateAndSaveSchedule:
         # Verify schedule was saved to DB
         saved = get_schedule(session, trip.id)
         assert len(saved) == 2
+
+    @pytest.mark.asyncio
+    async def test_preferences_passed_to_generate_schedule(self, session):
+        trip = create_trip(session, "Test", "Tokyo", 3)
+        opts = self._setup_rated_options(session, trip, n=1)
+        update_preferences(session, trip.id, "day_start_minutes", "10:00")
+        session.refresh(trip)
+        day_plans = _make_day_plans(trip.id, [opts[0].id])
+
+        with patch("src.services.trip_service.generate_schedule", new_callable=AsyncMock) as m:
+            m.return_value = PlanResult(day_plans=day_plans, source="llm")
+            await generate_and_save_schedule(session, trip, num_days=3)
+
+        prefs = m.call_args.kwargs["preferences"]
+        assert prefs.day_start_minutes == 600
 
     @pytest.mark.asyncio
     async def test_llm_error_still_returns_deterministic_schedule(self, session):

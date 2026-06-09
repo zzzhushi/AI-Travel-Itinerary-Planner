@@ -62,11 +62,24 @@ class TripPreferences(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     trip_id: Mapped[int] = mapped_column(Integer, ForeignKey("trips.id"), unique=True)
+    # Travel style. All nullable; NULL = "no preference" = default behavior.
+    pace: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)      # PACE_CHOICES
+    budget: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)    # BUDGET_CHOICES
+    # Per-trip day window in minutes-from-midnight; NULL falls back to the
+    # planner's DAY_START_MINUTES / DAY_END_MINUTES defaults.
+    day_start_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    day_end_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     # JSON list of interest strings e.g. ["food", "nightlife", "temples"]
     interests: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     trip: Mapped[Trip] = relationship("Trip", back_populates="preferences")
+
+
+# Trip preference choices (plain strings, validated in app logic — see
+# src/db/queries.update_preferences and src/workers/preferences.Preferences).
+PACE_CHOICES = ["relaxed", "balanced", "packed"]
+BUDGET_CHOICES = ["budget", "mid_range", "splurge"]
 
 
 # Activity categories (kept as plain strings for flexibility; validated in app logic)
