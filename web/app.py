@@ -17,16 +17,22 @@ from src.db.database import get_sync_session_factory
 from src.db.models import (
     ACTIVITY_CATEGORIES,
     BUDGET_CHOICES,
+    LOGISTICS_KINDS,
     PACE_CHOICES,
+    TRAVEL_MODES,
     Activity,
+    Logistics,
     Option,
     ScheduledItem,
     Trip,
 )
 from src.db.queries import (
     add_activity,
+    add_logistics,
     create_trip,
+    delete_logistics,
     get_activities,
+    get_logistics,
     get_options_for_trip,
     get_or_create_preferences,
     get_schedule,
@@ -37,10 +43,13 @@ from src.db.queries import (
     reset_research_state,
     set_option_duration,
     set_rating,
+    update_logistics,
 )
 from src.clients.places_client import places_client_from_env
 from src.services.trip_service import (
     generate_and_save_schedule,
+    geocode_logistics,
+    hotel_for_day,
     research_and_enrich,
     update_trip_fields,
     update_trip_preferences,
@@ -88,6 +97,8 @@ from src.workers.planner import category_default_duration  # noqa: E402
 templates.env.globals["category_default_duration"] = category_default_duration
 templates.env.globals["PACE_CHOICES"] = PACE_CHOICES
 templates.env.globals["BUDGET_CHOICES"] = BUDGET_CHOICES
+templates.env.globals["LOGISTICS_KINDS"] = LOGISTICS_KINDS
+templates.env.globals["TRAVEL_MODES"] = TRAVEL_MODES
 
 
 def _hhmm(minutes: int) -> str:
@@ -299,19 +310,46 @@ def _render_tab(request: Request, session: Session, trip: Trip, tab: str, ctx: d
         })
     elif tab == "schedule":
         schedule = get_schedule(session, trip.id)
-        # Group by day
+        logistics = get_logistics(session, trip.id)
+        # Group scheduled items by day
         days: dict[int, list] = {}
         for si in schedule:
             days.setdefault(si.day_number, []).append(si)
         for items in days.values():
             items.sort(key=lambda x: x.start_minutes if x.start_minutes is not None else 9999)
-        num_days = trip.num_days or (max(days.keys()) if days else 0)
+        # Split logistics; travel rides the timeline, lodging annotates day headers.
+        travel = [l for l in logistics if l.kind in ("arrival", "departure")]
+        lodgings = [l for l in logistics if l.kind == "lodging"]
+        logistics_max_day = max(
+            [l.day_number for l in travel if l.day_number]
+            + [l.check_out_day for l in lodgings if l.check_out_day]
+            + [0]
+        )
+        num_days = trip.num_days or max((max(days.keys()) if days else 0), logistics_max_day)
+        travel_by_day: dict[int, list] = {}
+        for l in travel:
+            if l.day_number:
+                travel_by_day.setdefault(l.day_number, []).append(l)
+        home_base_by_day = {d: hotel_for_day(lodgings, d) for d in range(1, num_days + 1)}
         return templates.get_template("trips/_tab_schedule.html").render({
             **ctx, "request": request, "days": days, "num_days": num_days,
+            "travel_by_day": travel_by_day, "home_base_by_day": home_base_by_day,
         })
+    elif tab == "logistics":
+        return _render_logistics_panel(request, session, trip, ctx)
     elif tab == "preferences":
         return _render_preferences_panel(request, session, trip, ctx)
     return ""
+
+
+def _render_logistics_panel(request: Request, session: Session, trip: Trip, ctx: dict) -> str:
+    """Render the Logistics tab: travel (arrival/departure) + lodging collections."""
+    logistics = get_logistics(session, trip.id)
+    return templates.get_template("trips/_tab_logistics.html").render({
+        **ctx, "request": request, "trip": trip,
+        "travel": [l for l in logistics if l.kind in ("arrival", "departure")],
+        "lodgings": [l for l in logistics if l.kind == "lodging"],
+    })
 
 
 def _render_preferences_panel(request: Request, session: Session, trip: Trip, ctx: dict) -> str:
@@ -514,6 +552,85 @@ def delete_activity(trip_id: int, act_id: int, session: Session = Depends(get_db
     if act and act.trip_id == trip_id:
         session.delete(act)
         session.commit()
+    return HTMLResponse("")
+
+
+# ---------------------------------------------------------------------------
+# Logistics (travel + lodging) — collection CRUD, mirrors activities
+# ---------------------------------------------------------------------------
+
+async def _geocode_trip_logistics(session: Session, trip: Trip) -> None:
+    """Best-effort synchronous geocode after a logistics add/edit.
+
+    One Places lookup per just-changed row; no-op when no Maps key is configured
+    (places_client_from_env returns None), so tests stay network-free.
+    """
+    client = places_client_from_env()
+    try:
+        await geocode_logistics(session, trip, client)
+    finally:
+        if client is not None:
+            client.close()
+
+
+def _logistics_row_response(request: Request, trip: Trip, item: Logistics) -> HTMLResponse:
+    return templates.TemplateResponse(request, "trips/_logistics_row.html", {
+        "request": request, "trip": trip, "l": item,
+    })
+
+
+@app.post("/trips/{trip_id}/logistics", response_class=HTMLResponse)
+async def add_logistics_route(request: Request, trip_id: int, session: Session = Depends(get_db)):
+    form = await request.form()
+    trip = get_trip(session, trip_id)
+    if not trip:
+        return HTMLResponse("", status_code=404)
+    item = add_logistics(session, trip_id, dict(form))
+    if item is None:  # invalid/missing kind
+        return HTMLResponse("", status_code=400)
+    await _geocode_trip_logistics(session, trip)
+    session.refresh(item)
+    return _logistics_row_response(request, trip, item)
+
+
+@app.get("/trips/{trip_id}/logistics/{lid}/edit", response_class=HTMLResponse)
+def edit_logistics_form(request: Request, trip_id: int, lid: int, session: Session = Depends(get_db)):
+    trip = get_trip(session, trip_id)
+    item = session.get(Logistics, lid)
+    if not trip or not item or item.trip_id != trip_id:
+        return HTMLResponse("", status_code=404)
+    return templates.TemplateResponse(request, "trips/_logistics_edit.html", {
+        "request": request, "trip": trip, "l": item,
+    })
+
+
+@app.get("/trips/{trip_id}/logistics/{lid}", response_class=HTMLResponse)
+def get_logistics_row(request: Request, trip_id: int, lid: int, session: Session = Depends(get_db)):
+    trip = get_trip(session, trip_id)
+    item = session.get(Logistics, lid)
+    if not trip or not item or item.trip_id != trip_id:
+        return HTMLResponse("", status_code=404)
+    return _logistics_row_response(request, trip, item)
+
+
+@app.patch("/trips/{trip_id}/logistics/{lid}", response_class=HTMLResponse)
+async def update_logistics_route(request: Request, trip_id: int, lid: int, session: Session = Depends(get_db)):
+    form = await request.form()
+    trip = get_trip(session, trip_id)
+    item = session.get(Logistics, lid)
+    if not trip or not item or item.trip_id != trip_id:
+        return HTMLResponse("", status_code=404)
+    item = update_logistics(session, item, dict(form))
+    await _geocode_trip_logistics(session, trip)  # re-geocodes only if location cleared
+    session.refresh(item)
+    return _logistics_row_response(request, trip, item)
+
+
+@app.delete("/trips/{trip_id}/logistics/{lid}", response_class=HTMLResponse)
+def delete_logistics_route(trip_id: int, lid: int, session: Session = Depends(get_db)):
+    item = session.get(Logistics, lid)
+    if item and item.trip_id == trip_id:
+        delete_logistics(session, item)
     return HTMLResponse("")
 
 

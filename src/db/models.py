@@ -50,6 +50,9 @@ class Trip(Base):
     preferences: Mapped[Optional[TripPreferences]] = relationship(
         "TripPreferences", back_populates="trip", uselist=False, cascade="all, delete-orphan"
     )
+    logistics: Mapped[list[Logistics]] = relationship(
+        "Logistics", back_populates="trip", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<Trip id={self.id} name={self.name!r} destination={self.destination!r}>"
@@ -208,6 +211,66 @@ class ScheduledItem(Base):
 
     def __repr__(self) -> str:
         return f"<ScheduledItem id={self.id} option_id={self.option_id} day={self.day_number} slot={self.time_slot}>"
+
+
+# Trip logistics kinds and travel modes (plain strings, validated in app logic —
+# see src/db/queries.add_logistics / update_logistics).
+LOGISTICS_KINDS = ["arrival", "departure", "lodging"]
+TRAVEL_MODES = ["flight", "train", "bus", "car", "ferry", "other"]
+
+
+class Logistics(Base):
+    """User-provided trip logistics: travel (arrival/departure) and lodging.
+
+    One unified table for two kinds of fixed, user-entered facts that constrain
+    scheduling (not researched/rated like Options):
+
+    - **arrival / departure** (kind): a flight/train/bus (mode) that lands or
+      leaves on a given `day_number` at `time_minutes`. Arrival compresses that
+      day's usable start; departure caps its end (see workers/logistics.py
+      build_day_window_fn). `transit_minutes` is the buffer to/from the point.
+    - **lodging** (kind): a hotel covering `check_in_day..check_out_day`; the
+      day's geographic home base (see services.trip_service.hotel_for_day).
+
+    Location fields (place_id/lat/lng/maps_link) are shared and filled once by a
+    best-effort Places geocode on save (place_refreshed_at gates re-lookups).
+    """
+
+    __tablename__ = "logistics"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trip_id: Mapped[int] = mapped_column(Integer, ForeignKey("trips.id"), nullable=False)
+    # One of LOGISTICS_KINDS ("arrival" | "departure" | "lodging").
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    # Travel only: one of TRAVEL_MODES. NULL for lodging.
+    mode: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    # Free-text name: airport / station / hotel.
+    label: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # Travel timing (arrival/departure). day_number is 1-based and independent of
+    # Trip.start_date. time_minutes is local clock minutes-from-midnight.
+    day_number: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    time_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    transit_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=0)
+    # Lodging day-range (1-based). check_out convention is owned by hotel_for_day.
+    check_in_day: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    check_out_day: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Location (geocoded; mirrors Option's Places fields; all best-effort).
+    address: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    place_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    latitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    longitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    maps_link: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    place_refreshed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+    trip: Mapped[Trip] = relationship("Trip", back_populates="logistics")
+
+    def __repr__(self) -> str:
+        return f"<Logistics id={self.id} kind={self.kind!r} label={self.label!r}>"
 
 
 # Travel modes used as the third key of route_cache. Kept lowercase and decoupled

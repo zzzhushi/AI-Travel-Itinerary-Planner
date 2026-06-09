@@ -1,0 +1,100 @@
+<p class="text-sm text-gray-500 mb-4">
+  Record your travel and where you're staying. These shape the schedule: arrival/departure
+  times bound the first and last day, and each stay becomes that day's home base.
+  Day numbers are 1-based and independent of the trip's calendar dates.
+</p>
+
+{% set field_cls = "border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400" %}
+
+<!-- Travel -->
+<section class="mb-8">
+  <h3 class="text-sm font-semibold text-gray-700 mb-2">Travel (arrival &amp; departure)</h3>
+  <div id="travel-list" class="space-y-2">
+    {% for l in travel %}
+      {% include "trips/_logistics_row.html" %}
+    {% endfor %}
+  </div>
+
+  <form
+    hx-post="/trips/{{ trip.id }}/logistics"
+    hx-target="#travel-list"
+    hx-swap="beforeend"
+    hx-on::after-request="this.reset()"
+    class="mt-3 flex flex-wrap gap-2 items-end bg-white border border-dashed border-gray-300 rounded-xl p-4">
+    <div class="flex flex-col gap-1">
+      <label class="text-xs text-gray-500 font-medium">Direction</label>
+      <select name="kind" class="{{ field_cls }}">
+        <option value="arrival">Arrival</option>
+        <option value="departure">Departure</option>
+      </select>
+    </div>
+    <div class="flex flex-col gap-1">
+      <label class="text-xs text-gray-500 font-medium">Mode</label>
+      <select name="mode" class="{{ field_cls }}">
+        <option value="">— mode —</option>
+        {% for m in TRAVEL_MODES %}
+        <option value="{{ m }}">{{ m }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="flex flex-col gap-1">
+      <label class="text-xs text-gray-500 font-medium">Airport / station</label>
+      <input name="label" placeholder="e.g. Narita Airport" class="{{ field_cls }} w-44">
+    </div>
+    <div class="flex flex-col gap-1">
+      <label class="text-xs text-gray-500 font-medium">Day</label>
+      <input type="number" min="1" name="day_number" placeholder="1" class="{{ field_cls }} w-16">
+    </div>
+    <div class="flex flex-col gap-1">
+      <label class="text-xs text-gray-500 font-medium">Time</label>
+      <input type="time" name="time_minutes" class="{{ field_cls }}">
+    </div>
+    <div class="flex flex-col gap-1">
+      <label class="text-xs text-gray-500 font-medium">Transit min</label>
+      <input type="number" min="0" name="transit_minutes" placeholder="60" class="{{ field_cls }} w-20">
+    </div>
+    <button type="submit"
+      class="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors">
+      + Add
+    </button>
+  </form>
+</section>
+
+<!-- Stays -->
+<section>
+  <h3 class="text-sm font-semibold text-gray-700 mb-2">Stays (hotels)</h3>
+  <div id="lodging-list" class="space-y-2">
+    {% for l in lodgings %}
+      {% include "trips/_logistics_row.html" %}
+    {% endfor %}
+  </div>
+
+  <form
+    hx-post="/trips/{{ trip.id }}/logistics"
+    hx-target="#lodging-list"
+    hx-swap="beforeend"
+    hx-on::after-request="this.reset()"
+    class="mt-3 flex flex-wrap gap-2 items-end bg-white border border-dashed border-gray-300 rounded-xl p-4">
+    <input type="hidden" name="kind" value="lodging">
+    <div class="flex flex-col gap-1">
+      <label class="text-xs text-gray-500 font-medium">Hotel</label>
+      <input name="label" required placeholder="e.g. Park Hyatt Tokyo" class="{{ field_cls }} w-52">
+    </div>
+    <div class="flex flex-col gap-1">
+      <label class="text-xs text-gray-500 font-medium">Check-in day</label>
+      <input type="number" min="1" name="check_in_day" placeholder="1" class="{{ field_cls }} w-20">
+    </div>
+    <div class="flex flex-col gap-1">
+      <label class="text-xs text-gray-500 font-medium">Check-out day</label>
+      <input type="number" min="1" name="check_out_day" placeholder="3" class="{{ field_cls }} w-20">
+    </div>
+    <div class="flex flex-col gap-1">
+      <label class="text-xs text-gray-500 font-medium">Address (optional)</label>
+      <input name="address" placeholder="" class="{{ field_cls }} w-52">
+    </div>
+    <button type="submit"
+      class="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors">
+      + Add
+    </button>
+  </form>
+</section>

@@ -11,10 +11,13 @@ from sqlalchemy.orm import Session
 from src.db.models import (
     Activity,
     BUDGET_CHOICES,
+    LOGISTICS_KINDS,
+    Logistics,
     Option,
     PACE_CHOICES,
     RouteCache,
     ScheduledItem,
+    TRAVEL_MODES,
     Trip,
     TripPreferences,
 )
@@ -148,6 +151,119 @@ def reset_research_state(session: Session, trip_id: int) -> None:
         ).update({Activity.researched_at: None}, synchronize_session=False)
 
     session.commit()
+
+
+# ---------------------------------------------------------------------------
+# Trip logistics (travel + lodging)
+# ---------------------------------------------------------------------------
+
+# Location fields whose change triggers a re-geocode (see trip_service).
+LOGISTICS_LOCATION_FIELDS = frozenset(("label", "address"))
+# Form fields the web layer may write, parsed/validated by _coerce_logistics.
+_LOGISTICS_FIELDS = frozenset(
+    (
+        "kind", "mode", "label", "day_number", "time_minutes", "transit_minutes",
+        "check_in_day", "check_out_day", "address", "note",
+    )
+)
+
+
+def _to_int(raw: str) -> Optional[int]:
+    s = str(raw).strip()
+    return int(s) if s.lstrip("-").isdigit() else None
+
+
+def _coerce_logistics(raw: dict) -> dict:
+    """Parse a raw form dict into typed Logistics column values (allowlisted).
+
+    Only keys present in `raw` and in _LOGISTICS_FIELDS are returned, so this is
+    usable for both create (full form) and patch (single field). `time_minutes`
+    accepts "HH:MM"; day/transit fields accept integers; enum fields fall back to
+    None when invalid.
+    """
+    out: dict = {}
+    for field, value in raw.items():
+        if field not in _LOGISTICS_FIELDS:
+            continue
+        s = str(value).strip()
+        if field == "kind":
+            out["kind"] = s if s in LOGISTICS_KINDS else None
+        elif field == "mode":
+            out["mode"] = s if s in TRAVEL_MODES else None
+        elif field in ("label", "address", "note"):
+            out[field] = s or None
+        elif field == "time_minutes":
+            out["time_minutes"] = _parse_hhmm(s) if s else None
+        elif field in ("day_number", "transit_minutes", "check_in_day", "check_out_day"):
+            out[field] = _to_int(s)
+    return out
+
+
+def get_logistics(session: Session, trip_id: int) -> list[Logistics]:
+    """All logistics rows for a trip, ordered for stable display."""
+    return (
+        session.query(Logistics)
+        .filter_by(trip_id=trip_id)
+        .order_by(Logistics.kind, Logistics.day_number, Logistics.check_in_day, Logistics.id)
+        .all()
+    )
+
+
+def add_logistics(session: Session, trip_id: int, raw: dict) -> Optional[Logistics]:
+    """Create a logistics row from a raw form dict. Returns None if kind invalid."""
+    fields = _coerce_logistics(raw)
+    if not fields.get("kind"):
+        return None
+    item = Logistics(trip_id=trip_id, **fields)
+    session.add(item)
+    session.commit()
+    session.refresh(item)
+    return item
+
+
+def update_logistics(session: Session, item: Logistics, raw: dict) -> Logistics:
+    """Apply allowlisted, parsed fields to an existing logistics row, then commit.
+
+    If a location field (label/address) changed, clears place_refreshed_at so the
+    caller's geocode pass re-resolves coordinates.
+    """
+    fields = _coerce_logistics(raw)
+    fields.pop("kind", None)  # kind is immutable after creation
+    location_changed = False
+    for field, value in fields.items():
+        if field in LOGISTICS_LOCATION_FIELDS and getattr(item, field) != value:
+            location_changed = True
+        setattr(item, field, value)
+    if location_changed:
+        item.place_id = None
+        item.place_refreshed_at = None
+    session.commit()
+    session.refresh(item)
+    return item
+
+
+def delete_logistics(session: Session, item: Logistics) -> None:
+    session.delete(item)
+    session.commit()
+
+
+def get_unenriched_logistics(session: Session, trip_id: int) -> list[Logistics]:
+    """Logistics rows that still need a Places geocode.
+
+    Only rows with a location hint (label or address) and not yet attempted
+    (place_refreshed_at IS NULL). One-shot: a failed lookup sets
+    place_refreshed_at so we never re-hit Places on every save.
+    """
+    return (
+        session.query(Logistics)
+        .filter(
+            Logistics.trip_id == trip_id,
+            Logistics.place_refreshed_at.is_(None),
+            or_(Logistics.label.isnot(None), Logistics.address.isnot(None)),
+        )
+        .order_by(Logistics.id)
+        .all()
+    )
 
 
 def get_activities(session: Session, trip_id: int) -> list[Activity]:

@@ -1,6 +1,6 @@
 <!-- Tab bar -->
 <div class="flex gap-1 mb-4 border-b border-gray-200">
-  {% for tab_name, tab_label in [("activities", "Activities"), ("options", "Rate options"), ("schedule", "Schedule"), ("preferences", "Preferences")] %}
+  {% for tab_name, tab_label in [("activities", "Activities"), ("options", "Rate options"), ("schedule", "Schedule"), ("logistics", "Logistics"), ("preferences", "Preferences")] %}
   <button
     hx-get="/trips/{{ trip.id }}/tabs/{{ tab_name }}"
     hx-target="#trip-tabs"

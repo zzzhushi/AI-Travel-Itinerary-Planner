@@ -23,6 +23,7 @@ from src.db.models import Trip, TripPreferences
 from src.db.queries import (
     get_all_options_for_trip,
     get_rated_options_for_schedule,
+    get_unenriched_logistics,
     get_unenriched_options,
     get_unresearched_activities,
     mark_researched,
@@ -158,6 +159,77 @@ async def enrich_options_with_places(
 
     session.commit()
     return {"enriched": enriched, "skipped": skipped, "failed": failed}
+
+
+def _logistics_search(item, destination: Optional[str]) -> str:
+    """Build a Places search string for a logistics row from its label/address."""
+    base = (item.label or item.address or "").strip()
+    return f"{base} {destination}".strip() if destination else base
+
+
+async def geocode_logistics(
+    session: Session,
+    trip: Trip,
+    places_client: Optional[PlacesClient] = None,
+) -> dict:
+    """Best-effort geocode of logistics rows lacking coordinates.
+
+    Mirrors enrich_options_with_places: one concurrent Places lookup per
+    unenriched row, setting place_refreshed_at even on failure so we never
+    re-hit Places on every save (users rarely edit logistics). A row keeps
+    working without coordinates — it just won't anchor clustering.
+
+    Returns {"geocoded": int, "failed": int}.
+    """
+    if places_client is None:
+        return {"geocoded": 0, "failed": 0}
+    rows = get_unenriched_logistics(session, trip.id)
+    if not rows:
+        return {"geocoded": 0, "failed": 0}
+
+    loop = asyncio.get_event_loop()
+    lookups = await asyncio.gather(
+        *[
+            loop.run_in_executor(None, places_client.lookup, _logistics_search(item, trip.destination))
+            for item in rows
+        ]
+    )
+
+    geocoded = failed = 0
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    for item, result in zip(rows, lookups):
+        item.place_refreshed_at = now
+        if result and result.get("place_id"):
+            item.place_id = result.get("place_id")
+            item.latitude = result.get("latitude")
+            item.longitude = result.get("longitude")
+            item.maps_link = result.get("maps_link")
+            if not item.address and result.get("formatted_address"):
+                item.address = result["formatted_address"]
+            geocoded += 1
+        else:
+            failed += 1
+            logger.debug("Places geocode found nothing for logistics %d (%r)", item.id, item.label)
+
+    session.commit()
+    return {"geocoded": geocoded, "failed": failed}
+
+
+def hotel_for_day(lodgings: list, day: int):
+    """Return the lodging that is the home base on `day` (1-based), or None.
+
+    Convention (owned here so storage stays simple): check_in_day..check_out_day
+    are inclusive day numbers the hotel is the base. On overlap the latest
+    check_in wins; rows with an incomplete range are ignored; gaps return None.
+    """
+    best = None
+    for h in lodgings:
+        if h.check_in_day is None or h.check_out_day is None:
+            continue
+        if h.check_in_day <= day <= h.check_out_day:
+            if best is None or h.check_in_day > best.check_in_day:
+                best = h
+    return best
 
 
 async def generate_and_save_schedule(
