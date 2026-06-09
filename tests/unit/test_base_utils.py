@@ -5,7 +5,10 @@ These are pure string-parsing functions — no mocking needed.
 
 import pytest
 
-from src.agents.base import _extract_json, _extract_json_dict
+import obslog
+from obslog import sink as sink_registry
+from obslog.testing import InMemorySink
+from src.agents.base import _extract_json, _extract_json_dict, instrument_llm_call
 
 
 class TestExtractJson:
@@ -83,3 +86,49 @@ class TestExtractJsonDict:
     def test_malformed_json_returns_none(self):
         # Input: broken brace → returns None
         assert _extract_json_dict('{"key": "broken"') is None
+
+
+class TestInstrumentLlmCall:
+    """instrument_llm_call times the call and emits one llm_call event on exit."""
+
+    @pytest.fixture
+    def mem(self):
+        s = InMemorySink()
+        obslog.set_sink(s)
+        yield s
+        sink_registry.reset()
+
+    def test_ok_emits_success_event_with_metrics(self, mem):
+        with obslog.operation("op"):
+            with instrument_llm_call("ResearcherAgent", "gemini-2.5-flash", "hello") as call:
+                result = call.ok("a response")
+        assert result == ("a response", "")
+        ev = next(e for e in mem.log_records if e.kind == "llm_call")
+        assert ev.fields["status"] == "ok"
+        assert ev.fields["agent_name"] == "ResearcherAgent"
+        assert ev.fields["model"] == "gemini-2.5-flash"
+        assert ev.fields["prompt_chars"] == 5
+        assert ev.fields["response_chars"] == len("a response")
+        assert ev.fields["error"] is None
+        assert ev.fields["latency_ms"] >= 0
+        assert ev.blob == "a response"
+
+    def test_failed_emits_error_event(self, mem):
+        with obslog.operation("op"):
+            with instrument_llm_call("PlannerAgent", "gemini-2.5-flash", "prompt") as call:
+                result = call.failed("Agent error: boom")
+        assert result == ("", "Agent error: boom")
+        ev = next(e for e in mem.log_records if e.kind == "llm_call")
+        assert ev.fields["status"] == "error"
+        assert ev.fields["error"] == "Agent error: boom"
+        assert ev.fields["response_chars"] == 0
+        assert ev.blob is None
+
+    def test_event_emitted_even_when_body_raises(self, mem):
+        with pytest.raises(RuntimeError):
+            with obslog.operation("op"):
+                with instrument_llm_call("A", "m", "p"):
+                    raise RuntimeError("kaboom")
+        # The event still fires (cm __exit__ runs), recording the default ok/empty
+        # outcome since neither ok() nor failed() was called.
+        assert any(e.kind == "llm_call" for e in mem.log_records)

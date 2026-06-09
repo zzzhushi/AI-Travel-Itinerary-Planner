@@ -13,6 +13,7 @@ from collections import defaultdict
 from datetime import date, timedelta
 from typing import TYPE_CHECKING, Optional
 
+import obslog
 from src.agents.base import LlmAgent, _extract_json
 from src.workers.planner.base import PlanResult
 from src.workers.planner.deterministic import build_schedule
@@ -452,18 +453,26 @@ class LlmPlanner:
     ) -> PlanResult:
         day_start = preferences.day_start_minutes if preferences else DAY_START_MINUTES
         day_end = preferences.day_end_minutes if preferences else DAY_END_MINUTES
-        draft = build_schedule(
-            options, num_days=num_days, min_rating=min_rating, day_start=day_start,
-        )
-        llm_days, err = await self._agent.generate_plan(
-            draft, destination or "", start_date=start_date,
-            travel_matrix=travel_matrix, preferences=preferences,
-        )
-        if err:
-            return PlanResult([], "llm", f"LLM refinement skipped: {err}")
+        async with obslog.span(
+            "llm_plan", num_days=num_days, day_start=day_start, day_end=day_end
+        ) as sp:
+            draft = build_schedule(
+                options, num_days=num_days, min_rating=min_rating, day_start=day_start,
+            )
+            sp.set(draft_items=sum(len(dp.items) for dp in draft))
 
-        refined = apply_llm_refinement(llm_days, draft, num_days, day_start, day_end)
-        if not refined or not any(dp.items for dp in refined):
-            return PlanResult([], "llm", "LLM produced an unusable schedule.")
+            llm_days, err = await self._agent.generate_plan(
+                draft, destination or "", start_date=start_date,
+                travel_matrix=travel_matrix, preferences=preferences,
+            )
+            if err:
+                sp.fail(err)
+                return PlanResult([], "llm", f"LLM refinement skipped: {err}")
 
-        return PlanResult(day_plans=refined, source="llm")
+            refined = apply_llm_refinement(llm_days, draft, num_days, day_start, day_end)
+            if not refined or not any(dp.items for dp in refined):
+                sp.fail("unusable schedule")
+                return PlanResult([], "llm", "LLM produced an unusable schedule.")
+
+            sp.set(scheduled_items=sum(len(dp.items) for dp in refined))
+            return PlanResult(day_plans=refined, source="llm")

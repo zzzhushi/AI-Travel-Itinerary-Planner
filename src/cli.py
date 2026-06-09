@@ -7,6 +7,8 @@ import os
 import sys
 from typing import Optional
 
+import obslog
+
 # Persistent event loop for the CLI session.
 # _run() creates and closes a new loop on every call. ADK's InMemoryRunner
 # binds its HTTP sessions to whichever loop was active when it was first awaited;
@@ -502,29 +504,33 @@ def main_menu(session, trip) -> None:
 
         choice = prompt("\nChoice").strip()
 
-        if choice == "1":
-            cmd_add_activities(session, trip)
-        elif choice == "2":
-            cmd_research(session, trip)
-        elif choice == "3":
-            cmd_enrich(session, trip)
-        elif choice == "4":
-            cmd_rank(session, trip, rerank=False)
-        elif choice == "5":
-            cmd_rank(session, trip, rerank=True)
-        elif choice == "6":
-            cmd_generate(session, trip)
-        elif choice == "7":
-            cmd_show_options(session, trip)
-        elif choice == "8":
-            cmd_view_trip(session, trip)
-        elif choice == "9":
-            trip = select_or_create_trip(session)
-        elif choice == "0":
-            console.print("[dim]Goodbye.[/dim]")
-            sys.exit(0)
-        else:
-            console.print("[red]Invalid choice.[/red]")
+        # Bind trip_id once, here at the command boundary: it flows into every
+        # span and llm_call event emitted while the command runs. No command,
+        # service, or worker has to thread it through by hand.
+        with obslog.bind_labels(trip_id=trip.id):
+            if choice == "1":
+                cmd_add_activities(session, trip)
+            elif choice == "2":
+                cmd_research(session, trip)
+            elif choice == "3":
+                cmd_enrich(session, trip)
+            elif choice == "4":
+                cmd_rank(session, trip, rerank=False)
+            elif choice == "5":
+                cmd_rank(session, trip, rerank=True)
+            elif choice == "6":
+                cmd_generate(session, trip)
+            elif choice == "7":
+                cmd_show_options(session, trip)
+            elif choice == "8":
+                cmd_view_trip(session, trip)
+            elif choice == "9":
+                trip = select_or_create_trip(session)
+            elif choice == "0":
+                console.print("[dim]Goodbye.[/dim]")
+                sys.exit(0)
+            else:
+                console.print("[red]Invalid choice.[/red]")
 
 
 # ---------------------------------------------------------------------------

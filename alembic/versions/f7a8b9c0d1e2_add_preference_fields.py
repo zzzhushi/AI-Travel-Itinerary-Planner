@@ -1,17 +1,20 @@
 """add pace/budget/day-window fields to trip_preferences
 
-Revision ID: e6f7a8b9c0d1
-Revises: d5e6f7a8b9c0
+Revision ID: f7a8b9c0d1e2
+Revises: e6f7a8b9c0d1
 Create Date: 2026-06-05
 
+Re-chained after the obslog tables migration (e6f7a8b9c0d1): this branch
+originally also used revision e6f7a8b9c0d1, which collided when the obslog
+library merged to main first. New id + down_revision keeps the history linear.
 """
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = "e6f7a8b9c0d1"
-down_revision: Union[str, None] = "d5e6f7a8b9c0"
+revision: str = "f7a8b9c0d1e2"
+down_revision: Union[str, None] = "e6f7a8b9c0d1"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

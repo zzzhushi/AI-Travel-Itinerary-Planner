@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 from typing import Dict, Optional
 
+import obslog
 from fastapi import Depends, FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -47,7 +48,25 @@ from src.services.trip_service import (
 from src.workers.preferences import Preferences
 from web.deps import get_db
 
-app = FastAPI(title="Itinerary Planner")
+from contextlib import asynccontextmanager  # noqa: E402
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # Structured logging: opt-in via OBSLOG_SINK=postgres; default NullSink keeps
+    # tests DB-free. The background writer is flushed/closed on shutdown.
+    from src.logging_setup import install_obslog_sink, shutdown_obslog
+
+    if install_obslog_sink() is not None:
+        with obslog.operation("web_startup"):  # smoke op: proves end-to-end writes
+            obslog.trace("web_started")
+    try:
+        yield
+    finally:
+        shutdown_obslog()
+
+
+app = FastAPI(title="Itinerary Planner", lifespan=_lifespan)
 
 _EDITABLE_TRIP_FIELDS = {"name", "destination", "num_days", "start_date", "end_date"}
 
@@ -166,9 +185,11 @@ def _run_research_and_enrich_background(trip_id: int, job: _Job) -> None:
             trip = session.get(Trip, trip_id)
             if trip is None:
                 return
-            summaries, _stats = asyncio.run(
-                research_and_enrich(session, trip, client)
-            )
+            # trip_id flows into every span/llm_call for this background job.
+            with obslog.bind_labels(trip_id=trip_id):
+                summaries, _stats = asyncio.run(
+                    research_and_enrich(session, trip, client)
+                )
         job.result = summaries
     except Exception as e:
         job.error = str(e)
@@ -186,9 +207,11 @@ def _run_schedule_background(trip_id: int, num_days: int, use_llm: bool, job: _J
             trip = session.get(Trip, trip_id)
             if trip is None:
                 return
-            result = asyncio.run(
-                generate_and_save_schedule(session, trip, num_days, use_llm)
-            )
+            # trip_id flows into every span/llm_call for this background job.
+            with obslog.bind_labels(trip_id=trip_id):
+                result = asyncio.run(
+                    generate_and_save_schedule(session, trip, num_days, use_llm)
+                )
         job.result = {"warn": result.warning}
     except Exception as e:
         job.error = str(e)
@@ -388,7 +411,11 @@ async def update_preferences_route(
         return HTMLResponse("", status_code=404)
     field = next(iter(form.keys()), None)
     if field is not None:
-        update_trip_preferences(session, trip, field, str(form[field]))
+        # Audit which preference changed — this is the trigger that explains why a
+        # later research/schedule run produced different results.
+        with obslog.bind_labels(trip_id=trip_id), obslog.operation("update_preference") as op:
+            op.set(field=field)
+            update_trip_preferences(session, trip, field, str(form[field]))
     ctx = _trip_context(session, trip)
     return HTMLResponse(_render_preferences_panel(request, session, trip, ctx))
 
@@ -398,7 +425,8 @@ def reset_research_route(request: Request, trip_id: int, session: Session = Depe
     trip = get_trip(session, trip_id)
     if not trip:
         return HTMLResponse("", status_code=404)
-    reset_research_state(session, trip_id)
+    with obslog.bind_labels(trip_id=trip_id), obslog.operation("reset_research"):
+        reset_research_state(session, trip_id)
     # Kick off a fresh research run, mirroring start_research.
     job = _Job()
     _research_jobs[trip_id] = job

@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import date
 from typing import TYPE_CHECKING, Optional
 
+import obslog
 from src.workers.planner.base import PlanResult
 from src.workers.planner.types import (
     DAY_END_MINUTES,
@@ -169,9 +170,13 @@ class DeterministicPlanner:
         # window is honored here (pace/budget/interests are LLM-only).
         day_start = preferences.day_start_minutes if preferences else DAY_START_MINUTES
         day_end = preferences.day_end_minutes if preferences else DAY_END_MINUTES
-        day_plans = build_schedule(
-            options, num_days=num_days, min_rating=min_rating, day_start=day_start,
-        )
-        for dp in day_plans:
-            _fit_day_within_window(dp, day_start, day_end)
-        return PlanResult(day_plans=day_plans, source="deterministic")
+        async with obslog.span(
+            "deterministic_plan", num_days=num_days, day_start=day_start, day_end=day_end
+        ) as sp:
+            day_plans = build_schedule(
+                options, num_days=num_days, min_rating=min_rating, day_start=day_start,
+            )
+            for dp in day_plans:
+                _fit_day_within_window(dp, day_start, day_end)
+            sp.set(scheduled_items=sum(len(dp.items) for dp in day_plans))
+            return PlanResult(day_plans=day_plans, source="deterministic")
