@@ -150,6 +150,7 @@ async def generate_schedule(
     travel_matrix: Optional[dict[str, dict[tuple[int, int], dict]]] = None,
     preferences: Optional[Preferences] = None,
     window_fn: Optional[DayWindowFn] = None,
+    home_base_by_day: Optional[dict[int, dict]] = None,
 ) -> PlanResult:
     """Generate a day-by-day schedule from rated options.
 
@@ -177,6 +178,7 @@ async def generate_schedule(
                 travel_matrix=travel_matrix,
                 preferences=preferences,
                 window_fn=window_fn,
+                home_base_by_day=home_base_by_day,
             )
             if result.day_plans:
                 sp.set(source=result.source)

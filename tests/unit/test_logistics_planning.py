@@ -6,10 +6,27 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from src.db.models import Base
 from src.workers.logistics import build_day_window_fn, travel_option_dicts
 from src.workers.planner.deterministic import DeterministicPlanner
 from src.workers.planner.llm import apply_llm_refinement
 from src.workers.planner.types import DayPlan, DayWindow, ScheduleItem, constant_window
+
+
+@pytest.fixture
+def session():
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as s:
+        yield s
 
 
 # --- build_day_window_fn --------------------------------------------------
@@ -131,3 +148,68 @@ def test_arrival_window_seeds_unlocked_start():
     llm_days = [{"day": 1, "items": [{"option_id": 1}]}]  # no start_minutes
     result = apply_llm_refinement(llm_days, draft, num_days=1, window_fn=window)
     assert result[0].items[0].start_minutes == 960
+
+
+# --- Phase 3: hotels as home-base anchors ---------------------------------
+
+from src.services.travel import ClusterAnchor, cluster_and_route, select_anchors
+from src.workers.planner.clustering import Cluster
+from src.workers.planner.llm import _format_home_bases
+from src.services.trip_service import _home_base_by_day
+
+
+def test_select_anchors_forced_override_wins():
+    clusters = [Cluster(cluster_id=0, name="A", member_ids=(1, 2))]
+    forced = {0: ClusterAnchor(0, "hotelP", 35.7, 139.7)}
+    anchors = select_anchors(
+        clusters, {1: "p1", 2: "p2"}, {1: 4.0, 2: 5.0},
+        forced_anchor_by_cluster=forced,
+    )
+    assert len(anchors) == 1 and anchors[0].place_id == "hotelP"
+
+
+def test_select_anchors_default_without_force():
+    clusters = [Cluster(cluster_id=0, name="A", member_ids=(1, 2))]
+    anchors = select_anchors(clusters, {1: "p1", 2: "p2"}, {1: 4.0, 2: 5.0})
+    assert anchors[0].place_id == "p2"  # highest rating wins normally
+
+
+def test_cluster_and_route_stamps_hotel_cluster(session):
+    # A hotel co-located with an option joins that option's cluster.
+    options = [{"option_id": 1, "name": "Museum", "latitude": 35.71,
+                "longitude": 139.79, "place_id": "opt1", "google_rating": 4.5}]
+    hotels = [{"id": 9, "option_id": -2_000_009, "name": "Hotel", "label": "Hotel",
+               "latitude": 35.71, "longitude": 139.79, "place_id": "hotelP",
+               "check_in_day": 1, "check_out_day": 3}]
+    cluster_and_route(session, options, hotels=hotels)
+    assert hotels[0]["cluster_id"] is not None
+    assert options[0]["cluster_id"] == hotels[0]["cluster_id"]
+
+
+def test_format_home_bases_renders_per_day():
+    hb = {1: {"label": "Park Hyatt", "cluster_id": 2},
+          2: {"label": "Park Hyatt", "cluster_id": 2}}
+    out = _format_home_bases(hb, num_days=2)
+    assert "Home base" in out and "Park Hyatt" in out
+    assert "cluster 2" in out and "Day 1" in out and "Day 2" in out
+
+
+def test_format_home_bases_empty():
+    assert _format_home_bases(None, 3) == ""
+    assert _format_home_bases({}, 3) == ""
+
+
+def test_home_base_by_day_latest_checkin_wins_on_overlap():
+    lodging = [
+        {"label": "A", "check_in_day": 1, "check_out_day": 3, "cluster_id": 0},
+        {"label": "B", "check_in_day": 3, "check_out_day": 5, "cluster_id": 1},
+    ]
+    m = _home_base_by_day(lodging, 5)
+    assert m[1]["label"] == "A" and m[2]["label"] == "A"
+    assert m[3]["label"] == "B" and m[5]["label"] == "B"  # day 3 overlap → latest
+
+
+def test_home_base_by_day_tolerates_gaps():
+    lodging = [{"label": "A", "check_in_day": 1, "check_out_day": 2, "cluster_id": 0}]
+    m = _home_base_by_day(lodging, 4)
+    assert set(m) == {1, 2} and 3 not in m and 4 not in m

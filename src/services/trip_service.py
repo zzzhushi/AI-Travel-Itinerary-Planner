@@ -235,6 +235,48 @@ def _travel_dicts(logistics: list) -> list[dict]:
     ]
 
 
+def _lodging_dicts(logistics: list) -> list[dict]:
+    """Convert lodging Logistics rows to plain dicts for cluster_and_route.
+
+    Synthetic negative option_ids in a distinct range from travel anchors so they
+    never collide with real Option ids or each other. These join clustering only
+    (to land in a neighborhood cluster + force its anchor); they are never
+    scheduled as stops.
+    """
+    return [
+        {
+            "id": l.id,
+            "option_id": -2_000_000 - l.id,
+            "name": l.label or "Hotel",
+            "label": l.label or "Hotel",
+            "latitude": l.latitude, "longitude": l.longitude,
+            "place_id": l.place_id,
+            "check_in_day": l.check_in_day, "check_out_day": l.check_out_day,
+        }
+        for l in logistics
+        if l.kind == "lodging"
+    ]
+
+
+def _home_base_by_day(lodging_dicts: list[dict], num_days: int) -> dict[int, dict]:
+    """Map each day to its home-base hotel {label, cluster_id} (latest check-in wins).
+
+    Reads cluster_id stamped onto the lodging dicts by cluster_and_route.
+    """
+    by_day: dict[int, dict] = {}
+    for d in range(1, num_days + 1):
+        best = None
+        for h in lodging_dicts:
+            ci, co = h.get("check_in_day"), h.get("check_out_day")
+            if ci is None or co is None:
+                continue
+            if ci <= d <= co and (best is None or ci > best["check_in_day"]):
+                best = h
+        if best is not None:
+            by_day[d] = {"label": best["label"], "cluster_id": best.get("cluster_id")}
+    return by_day
+
+
 def hotel_for_day(lodgings: list, day: int):
     """Return the lodging that is the home base on `day` (1-based), or None.
 
@@ -268,24 +310,33 @@ async def generate_and_save_schedule(
         return PlanResult(day_plans=[], source="deterministic")
 
     prefs = Preferences.from_orm(trip.preferences)
+    logistics = get_logistics(session, trip.id)
 
     # Flights/travel: arrival/departure rows become a per-day window (compressing
     # the first/last day) and locked "transport" anchors pinned on the timeline.
-    travel = _travel_dicts(get_logistics(session, trip.id))
+    travel = _travel_dicts(logistics)
     window_fn = build_day_window_fn(
         travel, base_start=prefs.day_start_minutes, base_end=prefs.day_end_minutes
     )
+
+    # Lodging: each day's hotel is its geographic home base. The dicts join
+    # clustering (cluster_and_route stamps cluster_id on them and forces their
+    # cluster's anchor to the hotel) so travel originates from where the day
+    # starts/ends; home_base_by_day surfaces that to the LLM prompt.
+    lodging = _lodging_dicts(logistics)
 
     # Geographic clustering + inter-cluster travel matrix feed the LLM planner.
     # cluster_and_route stamps cluster_id/cluster_name onto the option dicts in
     # place (so they reach the prompt) and returns the K×K matrix. With no
     # routes client it falls back to haversine estimates — no API billing.
-    # Clustering runs on the real options only; travel anchors are added after so
-    # the matrix stays city-focused (an airport would distort inter-cluster legs).
+    # Clustering runs on real options + hotels only; travel anchors are added
+    # after so the matrix stays city-focused (an airport would distort legs).
     travel_matrix = None
+    home_base_by_day: dict[int, dict] = {}
     if use_llm_refinement:
         try:
-            travel_matrix = cluster_and_route(session, options)
+            travel_matrix = cluster_and_route(session, options, hotels=lodging)
+            home_base_by_day = _home_base_by_day(lodging, num_days)
         except Exception:
             logger.warning("Clustering/travel-matrix failed for trip %s", trip.id, exc_info=True)
 
@@ -302,6 +353,7 @@ async def generate_and_save_schedule(
         travel_matrix=travel_matrix,
         preferences=prefs,
         window_fn=window_fn,
+        home_base_by_day=home_base_by_day,
     )
 
     upsert_schedule(session, trip.id, result.day_plans)
