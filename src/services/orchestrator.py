@@ -17,6 +17,7 @@ from typing import Optional
 import obslog
 from src.workers.researcher import ResearcherAgent, RESEARCHER_INSTRUCTION
 from src.workers.planner import (
+    DayWindowFn,
     DeterministicPlanner,
     LlmPlanner,
     PlanResult,
@@ -148,6 +149,7 @@ async def generate_schedule(
     start_date: Optional[date] = None,
     travel_matrix: Optional[dict[str, dict[tuple[int, int], dict]]] = None,
     preferences: Optional[Preferences] = None,
+    window_fn: Optional[DayWindowFn] = None,
 ) -> PlanResult:
     """Generate a day-by-day schedule from rated options.
 
@@ -159,6 +161,10 @@ async def generate_schedule(
     (`services.travel.cluster_and_route`); it is passed to the LlmPlanner so the
     model can sequence clusters by real travel time. The DeterministicPlanner
     ignores it.
+
+    `window_fn` is the per-day scheduling window (built from flights by
+    `workers.logistics.build_day_window_fn`); both planners honor it. None means
+    every day uses the preference window (prior behavior).
     """
     async with obslog.span("generate_schedule", destination=destination, num_days=num_days) as sp:
         sp.set(**_pref_attrs(preferences))
@@ -170,6 +176,7 @@ async def generate_schedule(
                 min_rating=min_rating,
                 travel_matrix=travel_matrix,
                 preferences=preferences,
+                window_fn=window_fn,
             )
             if result.day_plans:
                 sp.set(source=result.source)
@@ -177,14 +184,14 @@ async def generate_schedule(
             # LLM failed or unusable — fall back to deterministic, carry the warning.
             llm_warning = result.warning
             fallback = await _deterministic_planner.plan(
-                options, num_days, min_rating=min_rating, preferences=preferences,
+                options, num_days, min_rating=min_rating, preferences=preferences, window_fn=window_fn,
             )
             fallback.warning = llm_warning or "LLM produced an unusable schedule; using deterministic fallback."
             sp.set(source=fallback.source, fallback=True)
             return fallback
 
         result = await _deterministic_planner.plan(
-            options, num_days, min_rating=min_rating, preferences=preferences,
+            options, num_days, min_rating=min_rating, preferences=preferences, window_fn=window_fn,
         )
         sp.set(source=result.source)
         return result

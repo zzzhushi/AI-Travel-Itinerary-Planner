@@ -22,6 +22,7 @@ from src.workers.preferences import Preferences
 from src.db.models import Trip, TripPreferences
 from src.db.queries import (
     get_all_options_for_trip,
+    get_logistics,
     get_rated_options_for_schedule,
     get_unenriched_logistics,
     get_unenriched_options,
@@ -32,6 +33,7 @@ from src.db.queries import (
     upsert_schedule,
 )
 from src.clients.places_client import PlacesClient
+from src.workers.logistics import build_day_window_fn, travel_option_dicts
 
 logger = logging.getLogger(__name__)
 
@@ -215,6 +217,24 @@ async def geocode_logistics(
     return {"geocoded": geocoded, "failed": failed}
 
 
+def _travel_dicts(logistics: list) -> list[dict]:
+    """Convert arrival/departure Logistics rows to the plain dicts the planner
+    projections (build_day_window_fn / travel_option_dicts) consume.
+
+    Keeps the workers layer decoupled from the ORM (it sees dicts, not models).
+    """
+    return [
+        {
+            "id": l.id, "kind": l.kind, "day_number": l.day_number,
+            "time_minutes": l.time_minutes, "transit_minutes": l.transit_minutes,
+            "label": l.label, "mode": l.mode,
+            "latitude": l.latitude, "longitude": l.longitude,
+        }
+        for l in logistics
+        if l.kind in ("arrival", "departure")
+    ]
+
+
 def hotel_for_day(lodgings: list, day: int):
     """Return the lodging that is the home base on `day` (1-based), or None.
 
@@ -247,17 +267,30 @@ async def generate_and_save_schedule(
     if not options:
         return PlanResult(day_plans=[], source="deterministic")
 
+    prefs = Preferences.from_orm(trip.preferences)
+
+    # Flights/travel: arrival/departure rows become a per-day window (compressing
+    # the first/last day) and locked "transport" anchors pinned on the timeline.
+    travel = _travel_dicts(get_logistics(session, trip.id))
+    window_fn = build_day_window_fn(
+        travel, base_start=prefs.day_start_minutes, base_end=prefs.day_end_minutes
+    )
+
     # Geographic clustering + inter-cluster travel matrix feed the LLM planner.
     # cluster_and_route stamps cluster_id/cluster_name onto the option dicts in
     # place (so they reach the prompt) and returns the K×K matrix. With no
     # routes client it falls back to haversine estimates — no API billing.
-    # Skipped for the deterministic-only path, which ignores both signals.
+    # Clustering runs on the real options only; travel anchors are added after so
+    # the matrix stays city-focused (an airport would distort inter-cluster legs).
     travel_matrix = None
     if use_llm_refinement:
         try:
             travel_matrix = cluster_and_route(session, options)
         except Exception:
             logger.warning("Clustering/travel-matrix failed for trip %s", trip.id, exc_info=True)
+
+    # Inject locked travel anchors into the pool the planners schedule around.
+    options = options + travel_option_dicts(travel)
 
     result = await generate_schedule(
         destination=trip.destination,
@@ -267,7 +300,8 @@ async def generate_and_save_schedule(
         min_rating=1,
         start_date=trip.start_date,
         travel_matrix=travel_matrix,
-        preferences=Preferences.from_orm(trip.preferences),
+        preferences=prefs,
+        window_fn=window_fn,
     )
 
     upsert_schedule(session, trip.id, result.day_plans)
