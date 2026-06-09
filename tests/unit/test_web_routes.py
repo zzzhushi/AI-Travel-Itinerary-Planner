@@ -179,6 +179,82 @@ def test_update_activity_wrong_trip_returns_404(client, db_factory):
 
 
 # ---------------------------------------------------------------------------
+# Logistics (travel + lodging)
+# ---------------------------------------------------------------------------
+
+def test_logistics_tab_renders(client, db_factory):
+    trip_id = _make_trip(db_factory)
+    r = client.get(f"/trips/{trip_id}/tabs/logistics")
+    assert r.status_code == 200
+    assert "Travel" in r.text and "Stays" in r.text
+
+
+def test_add_travel_returns_row(client, db_factory):
+    trip_id = _make_trip(db_factory)
+    r = client.post(f"/trips/{trip_id}/logistics", data={
+        "kind": "arrival", "mode": "flight", "label": "Narita",
+        "day_number": "1", "time_minutes": "14:30",
+    })
+    assert r.status_code == 200
+    assert "Narita" in r.text and "arrival" in r.text
+
+
+def test_add_lodging_returns_row(client, db_factory):
+    trip_id = _make_trip(db_factory)
+    r = client.post(f"/trips/{trip_id}/logistics", data={
+        "kind": "lodging", "label": "Park Hyatt", "check_in_day": "1", "check_out_day": "3",
+    })
+    assert r.status_code == 200
+    assert "Park Hyatt" in r.text
+
+
+def test_add_logistics_invalid_kind_returns_400(client, db_factory):
+    trip_id = _make_trip(db_factory)
+    r = client.post(f"/trips/{trip_id}/logistics", data={"kind": "nope", "label": "x"})
+    assert r.status_code == 400
+
+
+def test_add_logistics_missing_trip_returns_404(client):
+    r = client.post("/trips/99999/logistics", data={"kind": "arrival", "label": "x"})
+    assert r.status_code == 404
+
+
+def test_update_logistics_wrong_trip_returns_404(client, db_factory):
+    from src.db.queries import add_logistics
+    trip_a = _make_trip(db_factory, name="A")
+    trip_b = _make_trip(db_factory, name="B")
+    with db_factory() as s:
+        item = add_logistics(s, trip_a, {"kind": "arrival", "label": "Narita"})
+        lid = item.id
+    r = client.patch(f"/trips/{trip_b}/logistics/{lid}", data={"day_number": "2"})
+    assert r.status_code == 404
+
+
+def test_delete_logistics(client, db_factory):
+    from src.db.queries import add_logistics, get_logistics
+    trip_id = _make_trip(db_factory)
+    with db_factory() as s:
+        item = add_logistics(s, trip_id, {"kind": "lodging", "label": "H", "check_in_day": "1", "check_out_day": "2"})
+        lid = item.id
+    r = client.delete(f"/trips/{trip_id}/logistics/{lid}")
+    assert r.status_code == 200
+    with db_factory() as s:
+        assert get_logistics(s, trip_id) == []
+
+
+def test_schedule_tab_shows_travel_and_home_base(client, db_factory):
+    from src.db.queries import add_logistics
+    trip_id = _make_trip(db_factory, num_days=3)
+    with db_factory() as s:
+        add_logistics(s, trip_id, {"kind": "arrival", "label": "Narita", "day_number": "1", "time_minutes": "14:30"})
+        add_logistics(s, trip_id, {"kind": "lodging", "label": "Park Hyatt", "check_in_day": "1", "check_out_day": "3"})
+    r = client.get(f"/trips/{trip_id}/tabs/schedule")
+    assert r.status_code == 200
+    # travel block + hotel home-base annotation render even with no schedule yet
+    assert "Narita" in r.text and "Park Hyatt" in r.text
+
+
+# ---------------------------------------------------------------------------
 # Field-edit allowlist (_EDITABLE_TRIP_FIELDS guard)
 # ---------------------------------------------------------------------------
 

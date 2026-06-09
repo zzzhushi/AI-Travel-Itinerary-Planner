@@ -1,0 +1,48 @@
+<div id="logistics-{{ l.id }}"
+  class="flex items-center gap-3 bg-white border border-gray-200 rounded-lg px-4 py-3 hover:border-gray-300 transition-colors">
+
+  <!-- Kind badge -->
+  <span class="text-xs px-2 py-0.5 rounded-full whitespace-nowrap
+    {% if l.kind == 'lodging' %}bg-purple-50 text-purple-600
+    {% elif l.kind == 'arrival' %}bg-sky-50 text-sky-600
+    {% else %}bg-amber-50 text-amber-600{% endif %}">
+    {% if l.kind == 'lodging' %}🏨 stay{% elif l.kind == 'arrival' %}🛬 arrival{% else %}🛫 departure{% endif %}
+  </span>
+
+  <!-- Label (inline-editable) + detail -->
+  <div class="flex-1 min-w-0">
+    <span
+      hx-get="/trips/{{ trip.id }}/logistics/{{ l.id }}/edit"
+      hx-trigger="click"
+      hx-target="#logistics-{{ l.id }}"
+      hx-swap="outerHTML"
+      title="Click to edit"
+      class="cursor-pointer font-medium text-gray-800 hover:text-indigo-600 transition-colors">
+      {{ l.label or "(unnamed)" }}
+    </span>
+    <span class="text-xs text-gray-400 ml-2 whitespace-nowrap">
+      {% if l.kind == 'lodging' %}
+        Days {{ l.check_in_day or '?' }}–{{ l.check_out_day or '?' }}
+      {% else %}
+        {% if l.mode %}{{ l.mode }} · {% endif %}Day {{ l.day_number or '?' }}{% if l.time_minutes is not none %} · {{ l.time_minutes|hhmm }}{% endif %}{% if l.transit_minutes %} · +{{ l.transit_minutes }}m transit{% endif %}
+      {% endif %}
+    </span>
+  </div>
+
+  <!-- Geocode status -->
+  {% if l.maps_link %}
+  <a href="{{ l.maps_link }}" target="_blank" rel="noopener" class="text-xs text-indigo-500 hover:underline whitespace-nowrap">📍 map</a>
+  {% elif l.place_refreshed_at %}
+  <span class="text-xs text-gray-300 whitespace-nowrap" title="No location match found">no map</span>
+  {% endif %}
+
+  <!-- Delete -->
+  <button
+    hx-delete="/trips/{{ trip.id }}/logistics/{{ l.id }}"
+    hx-target="#logistics-{{ l.id }}"
+    hx-swap="outerHTML"
+    hx-confirm="Remove '{{ l.label or 'this item' }}'?"
+    class="text-gray-300 hover:text-red-400 transition-colors text-sm ml-1">
+    ✕
+  </button>
+</div>

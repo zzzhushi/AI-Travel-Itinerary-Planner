@@ -23,14 +23,20 @@ from src.workers.planner.types import (
     DEFAULT_DURATION_MINUTES,
     SLOT_START_MINUTES,
     DayPlan,
+    DayWindow,
+    DayWindowFn,
     ScheduleItem,
     category_default_duration,
+    constant_window,
 )
 
 __all__ = [
     # Domain types
     "ScheduleItem",
     "DayPlan",
+    "DayWindow",
+    "DayWindowFn",
+    "constant_window",
     # Geographic clustering
     "ClusterPoint",
     "Cluster",

@@ -21,8 +21,10 @@ from src.workers.planner.types import (
     DAY_END_MINUTES,
     DAY_START_MINUTES,
     DayPlan,
+    DayWindowFn,
     ScheduleItem,
     category_default_duration,
+    constant_window,
 )
 from src.agents.providers import LLMProvider
 
@@ -51,7 +53,7 @@ The inter-cluster travel matrix gives one-way travel times (minutes) between clu
 How to plan:
 1. Minimise total travel; group by area. A day may span up to ~3 clusters, but every move between clusters costs the matrix travel time and eats the day. Sequence a day's clusters so you flow through adjacent areas in one direction — never backtrack (no A→B→A). Crossing the city is worth it for a high-priority stop, not for a low-rated one; balance the best stops against wasted back-and-forth.
 2. Keep clusters together. Stops sharing a cluster_id go on the same day and are visited consecutively; only split a cluster when it has more good stops than fit in one day.
-3. Assign clusters to days as a WHOLE-TRIP partition, not greedily day by day. First divide the clusters into per-day groups so that (a) each day covers one area or a few ADJACENT clusters (use the travel matrix to judge adjacency), (b) days are roughly balanced, and (c) NO day becomes a leftover bucket of far-apart stops — the last day must be as geographically compact as the first. Then anchor each day: if it has LOCKED items its area is fixed, build around them; otherwise anchor on the highest-rated stop that also fits the traveler's interests in that area, then add nearby stops. A cluster far from all others (a distant suburb, or a big all-day venue like a theme park) must either anchor its OWN day with its full duration allocated, or be dropped — never stitch a far, off-theme orphan onto a day whose other stops are in a different region just to use it up. Prefer dropping such an orphan over creating a cross-city day.
+3. Assign clusters to days as a WHOLE-TRIP partition, not greedily day by day. First divide the clusters into per-day groups so that (a) each day covers one area or a few ADJACENT clusters (use the travel matrix to judge adjacency), (b) days are roughly balanced, and (c) NO day becomes a leftover bucket of far-apart stops — the last day must be as geographically compact as the first. Then anchor each day: if it has LOCKED items its area is fixed, build around them; otherwise anchor on the highest-rated stop that also fits the traveler's interests in that area, then add nearby stops. If a "Home base each day" section is given, that day's hotel is the start and end point — sequence the day to flow out from the hotel and back, putting the hotel's cluster (or an adjacent one) first and last. A cluster far from all others (a distant suburb, or a big all-day venue like a theme park) must either anchor its OWN day with its full duration allocated, or be dropped — never stitch a far, off-theme orphan onto a day whose other stops are in a different region just to use it up. Prefer dropping such an orphan over creating a cross-city day.
 4. Match the requested pace (see Traveler preferences below; default balanced). A packed pace fills the whole day window — keep placing stops through the evening rather than stopping after the afternoon, pulling in the next-best nearby stops (an adjacent cluster is fine) before leaving hours empty. A relaxed pace deliberately schedules fewer stops with breathing room between them; do not over-fill. Always prioritise rating 5 > 4 > 3, and only skip a stop when it would need a long detour for little payoff.
 5. Budget real travel as hard arithmetic. Each stop's start_minutes MUST be at least the previous stop's start_minutes + its duration_minutes + travel from the previous stop (~10 min within a cluster; the matrix time between clusters). Never place two stops closer together than that — underestimating travel between neighborhoods is the most common mistake.
 6. Durations are the user's choice — honor them as fact. Schedule each stop for exactly its given duration_minutes; never shorten or lengthen it to be "realistic" (if a theme park is set to 30 min, use 30 min).
@@ -227,12 +229,40 @@ def _format_preferences(preferences: Optional[Preferences]) -> str:
     return "\n\nTraveler preferences:\n" + "\n".join(lines)
 
 
+def _format_home_bases(home_base_by_day: Optional[dict[int, dict]], num_days: int) -> str:
+    """Render the per-day hotel home base, or "" when no lodging is set.
+
+    `home_base_by_day` maps day_number -> {"label", "cluster_id"}. The cluster ref
+    ties the hotel to a cluster in the candidate pool so the model can start/end
+    the day there.
+    """
+    if not home_base_by_day:
+        return ""
+    lines: list[str] = []
+    for d in range(1, num_days + 1):
+        hb = home_base_by_day.get(d)
+        if not hb:
+            continue
+        cid = hb.get("cluster_id")
+        cluster_ref = f" (cluster {cid})" if cid is not None else ""
+        lines.append(f"  Day {d}: {hb.get('label')}{cluster_ref}")
+    if not lines:
+        return ""
+    return (
+        "\n\nHome base each day (start and end the day at this hotel; keep that "
+        "day's stops near it and flow out-and-back to minimise travel):\n"
+        + "\n".join(lines)
+    )
+
+
 def _build_prompt(
     day_plans: list[DayPlan],
     destination: str,
     start_date: Optional[date] = None,
     travel_matrix: Optional[dict[str, dict[tuple[int, int], dict]]] = None,
     preferences: Optional[Preferences] = None,
+    window_fn: Optional[DayWindowFn] = None,
+    home_base_by_day: Optional[dict[int, dict]] = None,
 ) -> str:
     # Flatten the round-robin draft into a single candidate pool. The draft's
     # per-day binning is arbitrary (round-robin by option_id) and is deliberately
@@ -242,15 +272,23 @@ def _build_prompt(
     num_days = max((dp.day_number for dp in day_plans), default=1)
     day_line = "; ".join(_day_label(d, start_date) for d in range(1, num_days + 1))
 
-    day_start = preferences.day_start_minutes if preferences else DAY_START_MINUTES
-    day_end = preferences.day_end_minutes if preferences else DAY_END_MINUTES
+    base_start = preferences.day_start_minutes if preferences else DAY_START_MINUTES
+    base_end = preferences.day_end_minutes if preferences else DAY_END_MINUTES
+    window = window_fn or constant_window(base_start, base_end)
+    # Per-day windows: a day bounded by a flight (arrival late / departure early)
+    # gets a tighter window. Stay within each day's own start/end.
+    window_lines = "\n".join(
+        f"  Day {d}: {_hhmm(window(d).start_minutes)}–{_hhmm(window(d).end_minutes)}"
+        for d in range(1, num_days + 1)
+    )
 
     prompt = (
         f"Destination: {destination}\n"
         f"Trip length: {num_days} day(s) — {day_line}\n"
-        f"Day window each day: day_start {day_start} ({_hhmm(day_start)}) – "
-        f"day_end {day_end} ({_hhmm(day_end)})\n"
-        f"{_format_preferences(preferences)}\n\n"
+        f"Per-day windows (place every stop within its day's window; never start a "
+        f"stop at or after that day's end):\n{window_lines}\n"
+        f"{_format_preferences(preferences)}"
+        f"{_format_home_bases(home_base_by_day, num_days)}\n\n"
         f"{_format_locks(items)}\n\n"
         f"Candidate stops grouped by geographic cluster (you have more than fit — "
         f"select the best and drop the rest):\n\n"
@@ -281,8 +319,13 @@ class PlannerAgent(LlmAgent):
         start_date: Optional[date] = None,
         travel_matrix: Optional[dict[str, dict[tuple[int, int], dict]]] = None,
         preferences: Optional[Preferences] = None,
+        window_fn: Optional[DayWindowFn] = None,
+        home_base_by_day: Optional[dict[int, dict]] = None,
     ) -> tuple[list[dict], str]:
-        prompt = _build_prompt(day_plans, destination, start_date, travel_matrix, preferences)
+        prompt = _build_prompt(
+            day_plans, destination, start_date, travel_matrix, preferences,
+            window_fn, home_base_by_day,
+        )
         text, err = await self.ask(prompt)
         if err:
             return [], err.replace("Agent error", "Planner agent error")
@@ -298,6 +341,7 @@ def apply_llm_refinement(
     num_days: int,
     day_start: int = DAY_START_MINUTES,
     day_end: int = DAY_END_MINUTES,
+    window_fn: Optional[DayWindowFn] = None,
 ) -> list[DayPlan]:
     """Merge the LLM's scheduling decisions with the original item metadata.
 
@@ -305,13 +349,17 @@ def apply_llm_refinement(
     Everything else (name, category, lat/lng, duration, user_rating) comes from
     original_day_plans — the authoritative source of truth.
 
+    `window_fn` supplies each day's start/end (so a flight can compress a day);
+    when omitted, the scalar day_start/day_end apply to every day.
+
     Validation — returns [] (signals fallback) when:
       - llm_days is empty
       - any day number is outside 1..num_days (hallucinated day)
 
     Window enforcement:
-      - Unlocked items starting at/after DAY_END_MINUTES are dropped (day-window cap).
-      - Locked items are never dropped and never window-capped.
+      - Unlocked items starting at/after the day's end are dropped (day-window cap).
+      - Locked items are never dropped and never window-capped (so a locked
+        departure flight survives even though it starts at/after the day's end).
 
     Locked item guarantees:
       - Pre-seeded first (Phase 0) on their pinned day at their pinned time, before
@@ -323,6 +371,8 @@ def apply_llm_refinement(
     """
     if not llm_days:
         return []
+
+    window = window_fn or constant_window(day_start, day_end)
 
     # -----------------------------------------------------------------------
     # Phase 1: build a flat lookup of every original item by option_id.
@@ -359,7 +409,7 @@ def apply_llm_refinement(
         if not orig.is_locked:
             continue
         day = orig.day_number if (orig.day_number and 1 <= orig.day_number <= num_days) else 1
-        start = orig.start_minutes if orig.start_minutes is not None else day_start
+        start = orig.start_minutes if orig.start_minutes is not None else window(day).start_minutes
         duration = orig.duration_minutes or category_default_duration(orig.category)
         seen_ids.add(orig.option_id)
         _get_or_create_day(day).items.append(ScheduleItem(
@@ -372,7 +422,7 @@ def apply_llm_refinement(
             note=None,
         ))
         # Seed the fallback clock for this day past the end of this locked slot.
-        day_clock_seed[day] = max(day_clock_seed.get(day, day_start), start + duration)
+        day_clock_seed[day] = max(day_clock_seed.get(day, window(day).start_minutes), start + duration)
 
     # -----------------------------------------------------------------------
     # Phase 1: process the LLM's unlocked scheduling decisions day by day.
@@ -389,7 +439,7 @@ def apply_llm_refinement(
 
         dp = _get_or_create_day(day_num)
         # Start the fallback clock after any locked anchors on this day.
-        current_time = day_clock_seed.get(day_num, day_start)
+        current_time = day_clock_seed.get(day_num, window(day_num).start_minutes)
 
         for item_dict in day_dict.get("items", []):
             opt_id = item_dict.get("option_id")
@@ -406,9 +456,9 @@ def apply_llm_refinement(
             valid_start = isinstance(raw_start, int) and 0 <= raw_start <= 1439
             start = raw_start if valid_start else current_time
 
-            # Day-window cap: drop items that would start at or after day_end.
-            # Don't mark seen — the LLM may still place this item on another day.
-            if start >= day_end:
+            # Day-window cap: drop items that would start at or after this day's
+            # end. Don't mark seen — the LLM may still place it on another day.
+            if start >= window(day_num).end_minutes:
                 continue
 
             seen_ids.add(opt_id)
@@ -450,26 +500,30 @@ class LlmPlanner:
         min_rating: int = 1,
         travel_matrix: Optional[dict[str, dict[tuple[int, int], dict]]] = None,
         preferences: Optional[Preferences] = None,
+        window_fn: Optional[DayWindowFn] = None,
+        home_base_by_day: Optional[dict[int, dict]] = None,
     ) -> PlanResult:
-        day_start = preferences.day_start_minutes if preferences else DAY_START_MINUTES
-        day_end = preferences.day_end_minutes if preferences else DAY_END_MINUTES
+        base_start = preferences.day_start_minutes if preferences else DAY_START_MINUTES
+        base_end = preferences.day_end_minutes if preferences else DAY_END_MINUTES
+        window = window_fn or constant_window(base_start, base_end)
         async with obslog.span(
-            "llm_plan", num_days=num_days, day_start=day_start, day_end=day_end
+            "llm_plan", num_days=num_days, day_start=base_start, day_end=base_end
         ) as sp:
             draft = build_schedule(
-                options, num_days=num_days, min_rating=min_rating, day_start=day_start,
+                options, num_days=num_days, min_rating=min_rating, window_fn=window,
             )
             sp.set(draft_items=sum(len(dp.items) for dp in draft))
 
             llm_days, err = await self._agent.generate_plan(
                 draft, destination or "", start_date=start_date,
-                travel_matrix=travel_matrix, preferences=preferences,
+                travel_matrix=travel_matrix, preferences=preferences, window_fn=window,
+                home_base_by_day=home_base_by_day,
             )
             if err:
                 sp.fail(err)
                 return PlanResult([], "llm", f"LLM refinement skipped: {err}")
 
-            refined = apply_llm_refinement(llm_days, draft, num_days, day_start, day_end)
+            refined = apply_llm_refinement(llm_days, draft, num_days, window_fn=window)
             if not refined or not any(dp.items for dp in refined):
                 sp.fail("unusable schedule")
                 return PlanResult([], "llm", "LLM produced an unusable schedule.")

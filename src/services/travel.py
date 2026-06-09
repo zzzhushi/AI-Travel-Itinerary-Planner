@@ -78,6 +78,7 @@ def select_anchors(
     place_id_by_option: dict[int, Optional[str]],
     rating_by_option: Optional[dict[int, Optional[float]]] = None,
     coords_by_option: Optional[dict[int, tuple[float, float]]] = None,
+    forced_anchor_by_cluster: Optional[dict[int, ClusterAnchor]] = None,
 ) -> list[ClusterAnchor]:
     """Pick one representative anchor place_id per cluster.
 
@@ -86,13 +87,21 @@ def select_anchors(
     pre-sorted ascending). Clusters whose members all lack a place_id yield no
     anchor and are simply skipped — they can't be routed.
 
+    `forced_anchor_by_cluster` overrides the computed anchor for a cluster (used
+    so a day's hotel — not a nearby attraction — anchors its cluster, making
+    inter-cluster legs originate from where the traveler actually starts/ends).
+
     When `coords_by_option` is provided, the anchor's lat/lng are populated so
     `compute_inter_cluster_matrix` can fall back to haversine estimates.
     """
     ratings = rating_by_option or {}
     coords = coords_by_option or {}
+    forced = forced_anchor_by_cluster or {}
     anchors: list[ClusterAnchor] = []
     for cluster in clusters:
+        if cluster.cluster_id in forced:
+            anchors.append(forced[cluster.cluster_id])
+            continue
         candidates = [
             oid for oid in cluster.member_ids if place_id_by_option.get(oid)
         ]
@@ -116,6 +125,7 @@ def cluster_and_route(
     *,
     modes: tuple[str, ...] = DEFAULT_MODES,
     now: Optional[datetime] = None,
+    hotels: Optional[list[dict]] = None,
 ) -> dict[str, dict[tuple[int, int], Leg]]:
     """Cluster options, stamp cluster_id/cluster_name onto them, return the matrix.
 
@@ -127,12 +137,22 @@ def cluster_and_route(
          (so they flow through `build_schedule` into the planner prompt),
       3. pick one anchor per cluster and compute the K×K travel matrix.
 
+    `hotels` (lodging dicts with option_id/latitude/longitude/place_id) join the
+    clustering as extra points so each hotel lands in its neighborhood cluster;
+    their `cluster_id`/`cluster_name` are stamped back in place (so the caller can
+    build the per-day home base), and a hotel's cluster anchor is *forced* to the
+    hotel's place_id — so inter-cluster legs originate from where the traveler
+    actually starts and ends the day.
+
     Options without coordinates each become a singleton cluster; options without
     a `place_id` cannot be routed and are simply absent from the matrix. When
     `routes_client` is None (the default), `compute_inter_cluster_matrix`
     auto-builds a `HaversineRoutesClient` from the anchor coordinates — so the
     matrix is populated with straight-line estimates without any API billing.
     """
+    hotels = hotels or []
+    pooled = options + hotels
+
     points = [
         ClusterPoint(
             option_id=o["option_id"],
@@ -142,20 +162,21 @@ def cluster_and_route(
             neighborhood=o.get("neighborhood"),
             google_rating=o.get("google_rating"),
         )
-        for o in options
+        for o in pooled
     ]
     clusters = cluster_points(points)
 
-    # Stamp cluster_id / cluster_name onto each option dict in place.
+    # Stamp cluster_id / cluster_name onto each option AND hotel dict in place.
     cluster_by_option: dict[int, Cluster] = {
         oid: cluster for cluster in clusters for oid in cluster.member_ids
     }
-    for o in options:
+    for o in pooled:
         cluster = cluster_by_option.get(o["option_id"])
         if cluster is not None:
             o["cluster_id"] = cluster.cluster_id
             o["cluster_name"] = cluster.name
 
+    # Real options supply the default per-cluster anchors...
     place_id_by_option = {o["option_id"]: o.get("place_id") for o in options}
     rating_by_option = {o["option_id"]: o.get("google_rating") for o in options}
     coords_by_option = {
@@ -163,8 +184,16 @@ def cluster_and_route(
         for o in options
         if o.get("latitude") is not None and o.get("longitude") is not None
     }
+    # ...and each hotel forces its own cluster's anchor to the hotel location.
+    forced: dict[int, ClusterAnchor] = {}
+    for h in hotels:
+        cid = h.get("cluster_id")
+        if cid is not None and h.get("place_id"):
+            forced[cid] = ClusterAnchor(cid, h["place_id"], h.get("latitude"), h.get("longitude"))
+
     anchors = select_anchors(
-        clusters, place_id_by_option, rating_by_option, coords_by_option
+        clusters, place_id_by_option, rating_by_option, coords_by_option,
+        forced_anchor_by_cluster=forced,
     )
     return compute_inter_cluster_matrix(
         session, anchors, routes_client, modes=modes, now=now

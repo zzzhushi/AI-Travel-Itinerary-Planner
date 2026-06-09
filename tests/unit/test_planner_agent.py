@@ -406,13 +406,12 @@ class TestBuildPromptPreferences:
     def test_window_line_uses_preference_values(self):
         prefs = Preferences(day_start_minutes=600, day_end_minutes=1200)
         prompt = _build_prompt(self._day_plans(), "Tokyo", preferences=prefs)
-        assert "day_start 600 (10:00)" in prompt
-        assert "day_end 1200 (20:00)" in prompt
+        # Rendered as a per-day window line: "Day 1: 10:00–20:00".
+        assert "Day 1: 10:00–20:00" in prompt
 
     def test_default_window_when_no_preferences(self):
         prompt = _build_prompt(self._day_plans(), "Tokyo")
-        assert "day_start 540 (09:00)" in prompt
-        assert "day_end 1260 (21:00)" in prompt
+        assert "Day 1: 09:00–21:00" in prompt
 
     def test_preferences_block_rendered(self):
         prefs = Preferences(

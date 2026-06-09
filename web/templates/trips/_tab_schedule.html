@@ -8,7 +8,7 @@
   {% endif %}
 {% endif %}
 
-{% if not days %}
+{% if num_days < 1 %}
 <div class="text-center py-12 text-gray-400">
   <p class="text-lg mb-1">No schedule yet</p>
   <p class="text-sm">Rate your options and click "Generate schedule" above.</p>
@@ -36,9 +36,11 @@
   <!-- Day columns -->
   {% for day_num in range(1, num_days + 1) %}
   {% set items = days.get(day_num, []) %}
+  {% set base = (home_base_by_day|default({})).get(day_num) %}
   <div class="flex-shrink-0 w-44 mr-2" data-day-col="{{ day_num }}">
     <div class="bg-indigo-600 text-white text-sm font-semibold px-3 py-1.5 rounded-t-lg mb-0">
       Day {{ day_num }}
+      {% if base %}<span class="block text-[10px] font-normal text-indigo-100 truncate" title="Home base">🏨 {{ base.label }}</span>{% endif %}
     </div>
     <!-- No overflow-hidden: keeps items visible during cross-column drag
          and lets the bottom resize handle receive pointer events. -->
@@ -56,6 +58,18 @@
       {% with trip_id=trip.id, item_top=pos[0], item_height=pos[1] %}
         {% include "trips/_schedule_item.html" %}
       {% endwith %}
+      {% endfor %}
+
+      <!-- Travel blocks (read-only; managed on the Logistics tab) -->
+      {% for l in (travel_by_day|default({})).get(day_num, []) %}
+      {% if l.time_minutes is not none %}
+      {% set ttop = (l.time_minutes - TIMELINE_START) if l.time_minutes > TIMELINE_START else 0 %}
+      <div class="absolute inset-x-0.5 bg-sky-100 border border-sky-300 rounded px-1.5 py-0.5 text-[10px] text-sky-800 pointer-events-none z-10 truncate"
+           style="top: {{ ttop }}px;"
+           title="{{ l.kind }} · {{ l.label or l.mode or '' }} {{ l.time_minutes|hhmm }}">
+        {% if l.kind == 'arrival' %}🛬{% else %}🛫{% endif %} {{ l.label or l.mode or l.kind }} {{ l.time_minutes|hhmm }}
+      </div>
+      {% endif %}
       {% endfor %}
 
     </div>

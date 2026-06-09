@@ -19,10 +19,12 @@ from src.workers.planner.base import PlanResult
 from src.workers.planner.types import (
     DAY_END_MINUTES,
     DAY_START_MINUTES,
+    DayWindowFn,
     ScheduleItem,
     DayPlan,
     _CATEGORY_ORDER,
     category_default_duration,
+    constant_window,
 )
 
 if TYPE_CHECKING:
@@ -88,11 +90,14 @@ def build_schedule(
     locked_items: Optional[list[dict]] = None,
     min_rating: int = 3,
     day_start: int = DAY_START_MINUTES,
+    window_fn: Optional[DayWindowFn] = None,
 ) -> list[DayPlan]:
     """Raw distributor: round-robin free items across days, no window enforcement.
 
     options: list of dicts with keys: option_id, name, category, latitude, longitude,
              user_rating, is_locked, day_number (optional), default_duration_minutes (optional)
+    `window_fn`, when given, supplies each day's start (so an arrival can push a
+    day's first item later); otherwise the scalar `day_start` is used for all days.
     Returns list of DayPlan sorted by day_number.
     """
     locked_items = locked_items or []
@@ -141,7 +146,8 @@ def build_schedule(
         days[day_num].items.append(item)
 
     for day_plan in days.values():
-        _assign_start_times(day_plan, day_start)
+        start = window_fn(day_plan.day_number).start_minutes if window_fn else day_start
+        _assign_start_times(day_plan, start)
 
     return sorted(days.values(), key=lambda d: d.day_number)
 
@@ -163,20 +169,24 @@ class DeterministicPlanner:
         min_rating: int = 1,
         travel_matrix: Optional[dict[str, dict[tuple[int, int], dict]]] = None,
         preferences: Optional[Preferences] = None,
+        window_fn: Optional[DayWindowFn] = None,
     ) -> PlanResult:
         # travel_matrix is accepted for SchedulePlanner-interface parity but
         # unused: the deterministic planner does not reason about travel times.
-        # Pace/budget/interests are likewise ignored — only the per-trip day
-        # window is honored here (pace/budget/interests are LLM-only).
-        day_start = preferences.day_start_minutes if preferences else DAY_START_MINUTES
-        day_end = preferences.day_end_minutes if preferences else DAY_END_MINUTES
+        # Pace/budget/interests are likewise ignored — only the per-day window is
+        # honored here. `window_fn` (built from flights) overrides the base
+        # preference window per day; with none, every day uses the prefs window.
+        base_start = preferences.day_start_minutes if preferences else DAY_START_MINUTES
+        base_end = preferences.day_end_minutes if preferences else DAY_END_MINUTES
+        window = window_fn or constant_window(base_start, base_end)
         async with obslog.span(
-            "deterministic_plan", num_days=num_days, day_start=day_start, day_end=day_end
+            "deterministic_plan", num_days=num_days, day_start=base_start, day_end=base_end
         ) as sp:
             day_plans = build_schedule(
-                options, num_days=num_days, min_rating=min_rating, day_start=day_start,
+                options, num_days=num_days, min_rating=min_rating, window_fn=window,
             )
             for dp in day_plans:
-                _fit_day_within_window(dp, day_start, day_end)
+                w = window(dp.day_number)
+                _fit_day_within_window(dp, w.start_minutes, w.end_minutes)
             sp.set(scheduled_items=sum(len(dp.items) for dp in day_plans))
             return PlanResult(day_plans=day_plans, source="deterministic")

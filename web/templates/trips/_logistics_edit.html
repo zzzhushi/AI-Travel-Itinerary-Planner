@@ -1,0 +1,65 @@
+<form id="logistics-{{ l.id }}"
+  hx-patch="/trips/{{ trip.id }}/logistics/{{ l.id }}"
+  hx-target="#logistics-{{ l.id }}"
+  hx-swap="outerHTML"
+  class="flex flex-wrap items-end gap-2 bg-indigo-50/40 border border-indigo-200 rounded-lg px-4 py-3">
+
+  {% set field_cls = "border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400" %}
+
+  {% if l.kind == 'lodging' %}
+    <div class="flex flex-col gap-1">
+      <label class="text-xs text-gray-500 font-medium">Hotel</label>
+      <input name="label" value="{{ l.label or '' }}" class="{{ field_cls }} w-44">
+    </div>
+    <div class="flex flex-col gap-1">
+      <label class="text-xs text-gray-500 font-medium">Check-in day</label>
+      <input type="number" min="1" name="check_in_day" value="{{ l.check_in_day or '' }}" class="{{ field_cls }} w-20">
+    </div>
+    <div class="flex flex-col gap-1">
+      <label class="text-xs text-gray-500 font-medium">Check-out day</label>
+      <input type="number" min="1" name="check_out_day" value="{{ l.check_out_day or '' }}" class="{{ field_cls }} w-20">
+    </div>
+    <div class="flex flex-col gap-1">
+      <label class="text-xs text-gray-500 font-medium">Address</label>
+      <input name="address" value="{{ l.address or '' }}" class="{{ field_cls }} w-44">
+    </div>
+  {% else %}
+    <div class="flex flex-col gap-1">
+      <label class="text-xs text-gray-500 font-medium">Mode</label>
+      <select name="mode" class="{{ field_cls }}">
+        <option value="">—</option>
+        {% for m in TRAVEL_MODES %}
+        <option value="{{ m }}" {% if l.mode == m %}selected{% endif %}>{{ m }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="flex flex-col gap-1">
+      <label class="text-xs text-gray-500 font-medium">{{ 'Airport / station' }}</label>
+      <input name="label" value="{{ l.label or '' }}" class="{{ field_cls }} w-44">
+    </div>
+    <div class="flex flex-col gap-1">
+      <label class="text-xs text-gray-500 font-medium">Day</label>
+      <input type="number" min="1" name="day_number" value="{{ l.day_number or '' }}" class="{{ field_cls }} w-16">
+    </div>
+    <div class="flex flex-col gap-1">
+      <label class="text-xs text-gray-500 font-medium">Time</label>
+      <input type="time" name="time_minutes" value="{{ l.time_minutes|hhmm if l.time_minutes is not none else '' }}" class="{{ field_cls }}">
+    </div>
+    <div class="flex flex-col gap-1">
+      <label class="text-xs text-gray-500 font-medium">Transit min</label>
+      <input type="number" min="0" name="transit_minutes" value="{{ l.transit_minutes or '' }}" class="{{ field_cls }} w-20">
+    </div>
+  {% endif %}
+
+  <button type="submit"
+    class="bg-indigo-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors">
+    Save
+  </button>
+  <button type="button"
+    hx-get="/trips/{{ trip.id }}/logistics/{{ l.id }}"
+    hx-target="#logistics-{{ l.id }}"
+    hx-swap="outerHTML"
+    class="text-gray-500 px-2 py-1.5 text-sm hover:text-gray-700">
+    Cancel
+  </button>
+</form>

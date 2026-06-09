@@ -3,11 +3,30 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 DAY_START_MINUTES = 540   # 09:00
 DAY_END_MINUTES = 1260    # 21:00
 DEFAULT_DURATION_MINUTES = 60  # fallback when a category has no specific default
+
+
+@dataclass(frozen=True)
+class DayWindow:
+    """The usable scheduling window for one day, in minutes-from-midnight."""
+    start_minutes: int
+    end_minutes: int
+
+
+# Resolves a 1-based day_number to its DayWindow. The planners consult this per
+# day instead of a single global window, so flight arrival/departure can compress
+# the first/last day. A constant function reproduces the old global behavior.
+DayWindowFn = Callable[[int], DayWindow]
+
+
+def constant_window(start_minutes: int, end_minutes: int) -> DayWindowFn:
+    """A DayWindowFn that returns the same window for every day (the default)."""
+    win = DayWindow(start_minutes, end_minutes)
+    return lambda _day: win
 
 # Typical visit length (minutes) by category. Keep in sync with ACTIVITY_CATEGORIES
 # in src/db/models.py. Categories not listed fall back to DEFAULT_DURATION_MINUTES.
